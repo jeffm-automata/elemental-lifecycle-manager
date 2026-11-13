@@ -134,6 +134,15 @@ upgrader "$INCOMING" && chroot /host reboot
 			Expect(plan.Spec.Upgrade.Args).To(Equal([]string{expectedUpgradeScript}))
 		})
 
+		It("pulls the OS image before the node is drained", func() {
+			Expect(plan.Spec.Prepare).ToNot(BeNil())
+			Expect(plan.Spec.Prepare.Image).To(Equal(plan.Spec.Upgrade.Image))
+			Expect(plan.Spec.Prepare.Command).To(Equal([]string{osUpgradeShell, "-c"}))
+			Expect(plan.Spec.Prepare.Args).To(Equal([]string{osPrepareScript}))
+			Expect(plan.Spec.Prepare.Args[0]).ToNot(ContainSubstring("upgrader"))
+			Expect(plan.Spec.Prepare.Args[0]).ToNot(ContainSubstring("reboot"))
+		})
+
 		It("enables drain with correct settings", func() {
 			Expect(plan.Spec.Drain).ToNot(BeNil())
 			Expect(ptr.Deref(plan.Spec.Drain.DeleteEmptydirData, false)).To(BeTrue())
@@ -189,12 +198,37 @@ upgrader "$INCOMING" && chroot /host reboot
 			Expect(plan.Spec.Upgrade.Args).To(Equal([]string{expectedUpgradeScript}))
 		})
 
+		It("pulls the OS image before the node is drained", func() {
+			Expect(plan.Spec.Prepare).ToNot(BeNil())
+			Expect(plan.Spec.Prepare.Image).To(Equal(plan.Spec.Upgrade.Image))
+			Expect(plan.Spec.Prepare.Command).To(Equal([]string{osUpgradeShell, "-c"}))
+			Expect(plan.Spec.Prepare.Args).To(Equal([]string{osPrepareScript}))
+			Expect(plan.Spec.Prepare.Args[0]).ToNot(ContainSubstring("upgrader"))
+			Expect(plan.Spec.Prepare.Args[0]).ToNot(ContainSubstring("reboot"))
+		})
+
 		It("enables drain with correct settings", func() {
 			Expect(plan.Spec.Drain).ToNot(BeNil())
 			Expect(ptr.Deref(plan.Spec.Drain.DeleteEmptydirData, false)).To(BeTrue())
 			Expect(ptr.Deref(plan.Spec.Drain.IgnoreDaemonSets, false)).To(BeTrue())
 			Expect(plan.Spec.Drain.Force).To(BeTrue())
 			Expect(plan.Spec.Drain.Timeout.String()).To(Equal("15m"))
+		})
+	})
+
+	Describe("Plans without drain", func() {
+		It("still pull the OS image in the prepare step", func() {
+			cp, err := OSControlPlane(releaseName, osImage, osVersion, releaseVersion, false)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(cp.Spec.Drain).To(BeNil())
+			Expect(cp.Spec.Prepare).ToNot(BeNil())
+			Expect(cp.Spec.Prepare.Image).To(Equal(osImage))
+
+			worker, err := OSWorker(releaseName, osImage, osVersion, releaseVersion, false)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(worker.Spec.Drain).To(BeNil())
+			Expect(worker.Spec.Prepare).ToNot(BeNil())
+			Expect(worker.Spec.Prepare.Image).To(Equal(osImage))
 		})
 	})
 

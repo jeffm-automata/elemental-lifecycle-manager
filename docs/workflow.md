@@ -28,6 +28,8 @@ LCM deploys the aforementioned `SUC Plans` in **sequence**, where the `worker` n
 
 After each plan is deployed, SUC creates the corresponding upgrade workloads for the targeted node group. Each workload handles a single node, and SUC creates them **sequentially**, ensuring that nodes within the group are upgraded one at a time. Each created workload uses the [SUSE/elemental](https://github.com/SUSE/elemental/tree/main) tool stack to perform the necessary upgrade steps.
 
+Before a node is cordoned and drained, its workload pulls the operating system image of the desired release in a preparation step. The time it takes to download the image is therefore not part of the time during which the node is unavailable for its regular workloads.
+
 A successful node operating system upgrade is indicated by the node rebooting and becoming available again. Once this happens, SUC creates the workload for the next node. The operating system upgrade phase is marked as `Completed` only after all `control-plane` and `worker` workloads complete successfully.
 
 ## Kubernetes Upgrade Phase

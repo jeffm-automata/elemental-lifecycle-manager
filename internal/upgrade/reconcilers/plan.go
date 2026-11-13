@@ -20,8 +20,11 @@ package reconcilers
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	upgradecattlev1 "github.com/rancher/system-upgrade-controller/pkg/apis/upgrade.cattle.io/v1"
+	"github.com/rancher/wrangler/v3/pkg/genericcondition"
 	lifecyclev1alpha1 "github.com/suse/elemental-lifecycle-manager/api/v1alpha1"
 	"github.com/suse/elemental-lifecycle-manager/internal/upgrade"
 	corev1 "k8s.io/api/core/v1"
@@ -65,12 +68,22 @@ func (p *SUCPlanReconciler) Reconcile(ctx context.Context, desired *upgradecattl
 	}
 
 	result := &PlanResult{Status: parsePhaseStatusFromPlan(plan)}
-	if result.Status.State == lifecyclev1alpha1.PlanComplete {
+
+	switch result.Status.State {
+	case lifecyclev1alpha1.PlanComplete:
 		nodes, err := p.listNodesForPlan(ctx, plan)
 		if err != nil {
 			return nil, fmt.Errorf("listing plan %q nodes: %w", plan.Name, err)
 		}
 		result.Nodes = nodes.Items
+	case lifecyclev1alpha1.UpgradeFailed:
+		// SUC cordons a node before the upgrade and only makes it schedulable again when the job succeeds,
+		// so the nodes of a failed job stay cordoned. Say so, as nothing else on the cluster does.
+		note, err := p.describeFailedNodes(ctx, plan)
+		if err != nil {
+			return nil, fmt.Errorf("inspecting nodes of failed plan %q: %w", plan.Name, err)
+		}
+		result.Status.Message += note
 	}
 
 	return result, nil
@@ -116,8 +129,65 @@ func (p *SUCPlanReconciler) listNodesForPlan(ctx context.Context, plan *upgradec
 	return nodes, nil
 }
 
+// describeFailedNodes describes the state in which the failed jobs of the given SUC Plan left their nodes.
+func (p *SUCPlanReconciler) describeFailedNodes(ctx context.Context, plan *upgradecattlev1.Plan) (string, error) {
+	if len(plan.Status.Applying) == 0 {
+		return "", nil
+	}
+
+	nodes := &corev1.NodeList{}
+	if err := p.List(ctx, nodes); err != nil {
+		return "", fmt.Errorf("listing nodes: %w", err)
+	}
+
+	var cordoned, gone []string
+	for _, applying := range plan.Status.Applying {
+		// SUC lists the nodes that a Plan is applied on by their hostname.
+		i := slices.IndexFunc(nodes.Items, func(node corev1.Node) bool {
+			return node.Name == applying || node.Labels[corev1.LabelHostname] == applying
+		})
+
+		switch {
+		case i < 0:
+			gone = append(gone, applying)
+		case nodes.Items[i].Spec.Unschedulable:
+			cordoned = append(cordoned, applying)
+		}
+	}
+
+	var note string
+	if len(cordoned) > 0 {
+		note += fmt.Sprintf(". Still cordoned: %s", strings.Join(cordoned, ", "))
+	}
+	if len(gone) > 0 {
+		note += fmt.Sprintf(". No longer part of the cluster: %s", strings.Join(gone, ", "))
+	}
+
+	return note, nil
+}
+
 // parsePhaseStatusFromPlan parses the SUC Plan's status to a PhaseStatus.
 func parsePhaseStatusFromPlan(p *upgradecattlev1.Plan) *upgrade.PhaseStatus {
+	var complete *genericcondition.GenericCondition
+	for i := range p.Status.Conditions {
+		if p.Status.Conditions[i].Type == string(upgradecattlev1.PlanComplete) {
+			complete = &p.Status.Conditions[i]
+			break
+		}
+	}
+
+	// SUC also uses the reason of an incomplete Plan to tell how far it got with it,
+	// e.g. "Resolved" or "SyncJob". Only a failed job is a failure of the Plan.
+	//
+	// SUC keeps the nodes of a failed job in the list of nodes that the Plan is applied on
+	// and does not start another job for them, so the failure has to be looked at first.
+	if complete != nil && complete.Status == corev1.ConditionFalse && complete.Reason == planReasonJobFailed {
+		return &upgrade.PhaseStatus{
+			State:   lifecyclev1alpha1.UpgradeFailed,
+			Message: fmt.Sprintf("Plan %s failed: %s", p.Name, complete.Message),
+		}
+	}
+
 	if len(p.Status.Applying) > 0 {
 		return &upgrade.PhaseStatus{
 			State:   lifecyclev1alpha1.UpgradeInProgress,
@@ -125,22 +195,10 @@ func parsePhaseStatusFromPlan(p *upgradecattlev1.Plan) *upgrade.PhaseStatus {
 		}
 	}
 
-	for _, cond := range p.Status.Conditions {
-		if cond.Type == string(upgradecattlev1.PlanComplete) {
-			if cond.Status == corev1.ConditionTrue {
-				return &upgrade.PhaseStatus{
-					State:   lifecyclev1alpha1.PlanComplete,
-					Message: fmt.Sprintf("Plan %s execution completed successfully", p.Name),
-				}
-			}
-			// SUC also uses the reason of an incomplete Plan to tell how far it got with it,
-			// e.g. "Resolved" or "SyncJob". Only a failed job is a failure of the Plan.
-			if cond.Status == corev1.ConditionFalse && cond.Reason == planReasonJobFailed {
-				return &upgrade.PhaseStatus{
-					State:   lifecyclev1alpha1.UpgradeFailed,
-					Message: fmt.Sprintf("Plan %s failed: %s", p.Name, cond.Message),
-				}
-			}
+	if complete != nil && complete.Status == corev1.ConditionTrue {
+		return &upgrade.PhaseStatus{
+			State:   lifecyclev1alpha1.PlanComplete,
+			Message: fmt.Sprintf("Plan %s execution completed successfully", p.Name),
 		}
 	}
 

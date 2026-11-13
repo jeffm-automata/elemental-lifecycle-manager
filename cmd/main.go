@@ -208,6 +208,7 @@ func main() {
 		AutoUpgradeHandler: reconcilers.NewLCMHelmReconciler(k8sClient, helmClient),
 		ChartVersion:       os.Getenv("LCM_CHART_VERSION"),
 		HelmClient:         helmClient,
+		Recorder:           mgr.GetEventRecorder("elemental-lifecycle-manager"),
 		Pipeline: upgrade.NewPipeline(
 			reconcilers.NewPriorityHelmReconciler(k8sClient, helmClient),
 			reconcilers.NewOSReconciler(k8sClient, sucPlanReconciler),

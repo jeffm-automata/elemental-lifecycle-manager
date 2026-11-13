@@ -108,7 +108,7 @@ func (r *OSReconciler) preparePlans(ctx context.Context, config *upgrade.Config)
 	}
 
 	if !isControlPlaneOnlyCluster(allNodes.Items) {
-		wkPlan, err := plan.OSWorker(config.ReleaseNamespacedName.Name, osConfig.Image, osConfig.Version, config.ReleaseVersion, osConfig.DrainOpts.Worker)
+		wkPlan, err := plan.OSWorker(config.ReleaseNamespacedName.Name, osConfig.Image, osConfig.Version, config.ReleaseVersion, osConfig.DrainOpts.Worker, osConfig.WorkerConcurrency)
 		if err != nil {
 			return nil, fmt.Errorf("generating OS worker plan: %w", err)
 		}

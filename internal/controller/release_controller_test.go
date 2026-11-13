@@ -428,6 +428,59 @@ components:
 			})
 		})
 
+		Context("When the Release configures the worker concurrency", func() {
+			const releaseVersion = "0.3.0"
+
+			concurrencyCtx := context.Background()
+			concurrencyNN := types.NamespacedName{Name: "test-resource-worker-concurrency", Namespace: defaultNamespace}
+			newRelease := func(workerConcurrency *int32) *lifecyclev1alpha1.Release {
+				return &lifecyclev1alpha1.Release{
+					ObjectMeta: metav1.ObjectMeta{Name: concurrencyNN.Name, Namespace: concurrencyNN.Namespace},
+					Spec: lifecyclev1alpha1.ReleaseSpec{
+						Version:           releaseVersion,
+						Registry:          fooBarRegistry,
+						WorkerConcurrency: workerConcurrency,
+					},
+				}
+			}
+
+			It("should upgrade the configured number of worker nodes at the same time", func() {
+				release := newRelease(new(int32(3)))
+				Expect(k8sClient.Create(concurrencyCtx, release)).To(Succeed())
+				DeferCleanup(deleteReleaseAndManifestCache, concurrencyCtx, concurrencyNN)
+
+				manifest, err := defaultManifestRetrieve(concurrencyCtx, release.Spec.Registry, release.Spec.Version)
+				Expect(err).NotTo(HaveOccurred())
+
+				config, err := defaultReconciler.parseUpgradeConfig(concurrencyCtx, manifest, release)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(config.OS.WorkerConcurrency).To(Equal(int64(3)))
+				Expect(config.Kubernetes.WorkerConcurrency).To(Equal(int64(3)))
+			})
+
+			It("should upgrade one worker node at a time when the field is not set", func() {
+				release := newRelease(nil)
+				Expect(k8sClient.Create(concurrencyCtx, release)).To(Succeed())
+				DeferCleanup(deleteReleaseAndManifestCache, concurrencyCtx, concurrencyNN)
+
+				manifest, err := defaultManifestRetrieve(concurrencyCtx, release.Spec.Registry, release.Spec.Version)
+				Expect(err).NotTo(HaveOccurred())
+
+				config, err := defaultReconciler.parseUpgradeConfig(concurrencyCtx, manifest, release)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(config.OS.WorkerConcurrency).To(Equal(upgrade.DefaultWorkerConcurrency))
+				Expect(config.Kubernetes.WorkerConcurrency).To(Equal(upgrade.DefaultWorkerConcurrency))
+			})
+
+			It("should not accept a worker concurrency lower than one", func() {
+				for _, workerConcurrency := range []int32{0, -1} {
+					err := k8sClient.Create(concurrencyCtx, newRelease(new(workerConcurrency)))
+					Expect(errors.IsInvalid(err)).To(BeTrue(), "worker concurrency %d: %v", workerConcurrency, err)
+					Expect(err.Error()).To(ContainSubstring("spec.workerConcurrency"))
+				}
+			})
+		})
+
 		Context("When the LCM charts are upgraded in this reconcile", func() {
 			const releaseVersion = "0.3.0"
 			const coreManifest = `

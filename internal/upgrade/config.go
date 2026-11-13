@@ -33,6 +33,10 @@ import (
 const (
 	LCMChartName    = "elemental-lifecycle-manager"
 	LCMCRDChartName = "elemental-lifecycle-manager-crds"
+
+	// DefaultWorkerConcurrency is the number of worker nodes upgraded at the same time
+	// when the Release does not specify otherwise.
+	DefaultWorkerConcurrency int64 = 1
 )
 
 // Config represents a complete upgrade specification for all phases.
@@ -61,6 +65,8 @@ type OSConfig struct {
 	Version string
 	// DrainOpts specifies which nodes should be drained before upgrading the operating system.
 	DrainOpts *DrainOpts
+	// WorkerConcurrency specifies how many worker nodes can have their operating system upgraded at the same time.
+	WorkerConcurrency int64
 }
 
 // KubernetesConfig contains configurations related to a specific target Kubernetes distribution.
@@ -71,6 +77,8 @@ type KubernetesConfig struct {
 	Version string
 	// DrainOpts specifies which nodes should be drained before upgrading the Kubernetes distribution.
 	DrainOpts *DrainOpts
+	// WorkerConcurrency specifies how many worker nodes can have their Kubernetes distribution upgraded at the same time.
+	WorkerConcurrency int64
 }
 
 // DrainOpts contains options for draining specific node types.
@@ -95,6 +103,9 @@ type HelmChartConfig struct {
 type RuntimeConfig struct {
 	DrainOpts  *DrainOpts
 	HelmCharts map[string]RuntimeHelmChartConfig
+	// WorkerConcurrency specifies how many worker nodes can be upgraded at the same time.
+	// Values lower than 1 result in the default of one node at a time.
+	WorkerConcurrency int64
 }
 
 // ConfigError specifies an error caused by invalid upgrade configuration coming either from runtime
@@ -139,20 +150,24 @@ func NewConfig(manifest *resolver.ResolvedManifest, releaseVersion string, relea
 		return nil, fmt.Errorf("parsing OS image %q: %w", core.Components.OperatingSystem.Image.Base, err)
 	}
 
+	workerConcurrency := max(runtimeConfig.WorkerConcurrency, DefaultWorkerConcurrency)
+
 	config := &Config{
 		ReleaseNamespacedName: releaseNN,
 		ReleaseVersion:        releaseVersion,
 		OS: &OSConfig{
-			Image:     core.Components.OperatingSystem.Image.Base,
-			Version:   ref.TagStr(),
-			DrainOpts: runtimeConfig.DrainOpts,
+			Image:             core.Components.OperatingSystem.Image.Base,
+			Version:           ref.TagStr(),
+			DrainOpts:         runtimeConfig.DrainOpts,
+			WorkerConcurrency: workerConcurrency,
 		},
 	}
 
 	config.Kubernetes = &KubernetesConfig{
-		Image:     core.Components.Kubernetes.Image,
-		Version:   core.Components.Kubernetes.Version,
-		DrainOpts: runtimeConfig.DrainOpts,
+		Image:             core.Components.Kubernetes.Image,
+		Version:           core.Components.Kubernetes.Version,
+		DrainOpts:         runtimeConfig.DrainOpts,
+		WorkerConcurrency: workerConcurrency,
 	}
 
 	var solutionCharts *api.Helm

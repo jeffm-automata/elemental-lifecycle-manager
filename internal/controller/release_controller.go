@@ -34,6 +34,7 @@ import (
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -434,7 +435,11 @@ func (r *ReleaseReconciler) parseUpgradeConfig(ctx context.Context, manifest *re
 	return upgrade.NewConfig(manifest,
 		release.Spec.Version,
 		types.NamespacedName{Name: release.Name, Namespace: release.Namespace},
-		&upgrade.RuntimeConfig{DrainOpts: opts, HelmCharts: runtimeCharts})
+		&upgrade.RuntimeConfig{
+			DrainOpts:         opts,
+			HelmCharts:        runtimeCharts,
+			WorkerConcurrency: int64(ptr.Deref(release.Spec.WorkerConcurrency, 0)),
+		})
 }
 
 // handleSUCOwner determines which is the owner of the system-upgrade-controller. If Rancher is deployed, then

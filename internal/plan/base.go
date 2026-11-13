@@ -32,6 +32,12 @@ const (
 	ControlPlaneLabel = "node-role.kubernetes.io/control-plane"
 )
 
+// workerConcurrency returns the number of worker nodes a Plan upgrades at the same time.
+// Worker nodes are upgraded one at a time unless a higher concurrency is requested.
+func workerConcurrency(concurrency int64) int64 {
+	return max(concurrency, 1)
+}
+
 func basePlan(name string, drain bool) *upgradecattlev1.Plan {
 	const (
 		kind               = "Plan"

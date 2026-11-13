@@ -26,7 +26,7 @@ For this phase, LCM proceeds to create [SUC Plans](https://github.com/rancher/sy
 
 LCM deploys the aforementioned `SUC Plans` in **sequence**, where the `worker` node plan is **only** deployed if the `control-plane` node plan has been marked as completed, signaling that all `control-plane` nodes are successfully upgraded.
 
-After each plan is deployed, SUC creates the corresponding upgrade workloads for the targeted node group. Each workload handles a single node, and SUC creates them **sequentially**, ensuring that nodes within the group are upgraded one at a time. Each created workload uses the [SUSE/elemental](https://github.com/SUSE/elemental/tree/main) tool stack to perform the necessary upgrade steps.
+After each plan is deployed, SUC creates the corresponding upgrade workloads for the targeted node group. Each workload handles a single node, and SUC creates them **sequentially**, ensuring that nodes within the group are upgraded one at a time. For `worker` nodes, the number of nodes upgraded at the same time can be raised by setting `spec.workerConcurrency` on the [`Release`](release-api.md#worker-concurrency) resource. Each created workload uses the [SUSE/elemental](https://github.com/SUSE/elemental/tree/main) tool stack to perform the necessary upgrade steps.
 
 Before a node is cordoned and drained, its workload pulls the operating system image of the desired release in a preparation step. The time it takes to download the image is therefore not part of the time during which the node is unavailable for its regular workloads.
 
@@ -49,7 +49,7 @@ Otherwise, for the Kubernetes version upgrade, LCM proceeds to create [SUC Plans
 
 LCM deploys the aforementioned `SUC Plans` in **sequence**, where the `worker` node plan is **only** deployed if the `control-plane` node plan has been marked as completed, signaling that all `control-plane` nodes are successfully upgraded.
 
-After each plan is deployed, SUC creates the corresponding upgrade workloads for the targeted node group. Each workload handles a single node, and SUC creates them **sequentially**, ensuring that nodes within the group are upgraded one at a time. Each created workload uses the [rancher/rke2-upgrade](https://github.com/rancher/rke2-upgrade/tree/master) tool stack to perform the necessary upgrade steps.
+After each plan is deployed, SUC creates the corresponding upgrade workloads for the targeted node group. Each workload handles a single node, and SUC creates them **sequentially**, ensuring that nodes within the group are upgraded one at a time. For `worker` nodes, the number of nodes upgraded at the same time can be raised by setting `spec.workerConcurrency` on the [`Release`](release-api.md#worker-concurrency) resource. Each created workload uses the [rancher/rke2-upgrade](https://github.com/rancher/rke2-upgrade/tree/master) tool stack to perform the necessary upgrade steps.
 
 While the node-level upgrades are running, the `Helm Controller` creates workloads that upgrade the Kubernetes packaged components to the versions expected by the desired Kubernetes release. These packaged components are core Kubernetes components shipped with the distribution and required for the cluster to function.
 

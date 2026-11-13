@@ -157,7 +157,7 @@ upgrader "$INCOMING" && chroot /host reboot
 
 		BeforeEach(func() {
 			var err error
-			plan, err = OSWorker(releaseName, osImage, osVersion, releaseVersion, drain)
+			plan, err = OSWorker(releaseName, osImage, osVersion, releaseVersion, drain, 1)
 			Expect(err).ToNot(HaveOccurred())
 		})
 
@@ -216,6 +216,22 @@ upgrader "$INCOMING" && chroot /host reboot
 		})
 	})
 
+	Describe("Worker concurrency", func() {
+		It("upgrades the requested number of worker nodes at the same time", func() {
+			worker, err := OSWorker(releaseName, osImage, osVersion, releaseVersion, drain, 3)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(worker.Spec.Concurrency).To(Equal(int64(3)))
+		})
+
+		It("falls back to one worker node at a time for invalid values", func() {
+			for _, concurrency := range []int64{0, -2} {
+				worker, err := OSWorker(releaseName, osImage, osVersion, releaseVersion, drain, concurrency)
+				Expect(err).ToNot(HaveOccurred())
+				Expect(worker.Spec.Concurrency).To(Equal(int64(1)))
+			}
+		})
+	})
+
 	Describe("Plans without drain", func() {
 		It("still pull the OS image in the prepare step", func() {
 			cp, err := OSControlPlane(releaseName, osImage, osVersion, releaseVersion, false)
@@ -224,7 +240,7 @@ upgrader "$INCOMING" && chroot /host reboot
 			Expect(cp.Spec.Prepare).ToNot(BeNil())
 			Expect(cp.Spec.Prepare.Image).To(Equal(osImage))
 
-			worker, err := OSWorker(releaseName, osImage, osVersion, releaseVersion, false)
+			worker, err := OSWorker(releaseName, osImage, osVersion, releaseVersion, false, 1)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(worker.Spec.Drain).To(BeNil())
 			Expect(worker.Spec.Prepare).ToNot(BeNil())

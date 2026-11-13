@@ -20,6 +20,7 @@ package reconcilers_test
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -184,6 +185,56 @@ var _ = Describe("OSReconciler", func() {
 				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
 				Expect(status.Message).To(ContainSubstring("Worker"))
 				Expect(callCount).To(Equal(2))
+			})
+
+			It("should apply the worker concurrency to the worker plan only", func() {
+				config.OS.WorkerConcurrency = 2
+
+				concurrency := map[string]int64{}
+				mockPlanRec.ReconcileFn = func(ctx context.Context, desired *upgradecattlev1.Plan) (*reconcilers.PlanResult, error) {
+					concurrency[desired.Name] = desired.Spec.Concurrency
+					return &reconcilers.PlanResult{
+						Status: &upgrade.PhaseStatus{
+							State:   lifecyclev1alpha1.PlanComplete,
+							Message: testPlanCompleted,
+						},
+						Nodes: []corev1.Node{},
+					}, nil
+				}
+
+				_, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(concurrency).To(HaveLen(2))
+				for name, value := range concurrency {
+					if strings.Contains(name, "worker") {
+						Expect(value).To(Equal(int64(2)), name)
+					} else {
+						Expect(value).To(Equal(int64(1)), name)
+					}
+				}
+			})
+
+			It("should upgrade one worker at a time when no concurrency is configured", func() {
+				concurrency := map[string]int64{}
+				mockPlanRec.ReconcileFn = func(ctx context.Context, desired *upgradecattlev1.Plan) (*reconcilers.PlanResult, error) {
+					concurrency[desired.Name] = desired.Spec.Concurrency
+					return &reconcilers.PlanResult{
+						Status: &upgrade.PhaseStatus{
+							State:   lifecyclev1alpha1.PlanComplete,
+							Message: testPlanCompleted,
+						},
+						Nodes: []corev1.Node{},
+					}, nil
+				}
+
+				_, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(concurrency).To(HaveLen(2))
+				for name, value := range concurrency {
+					Expect(value).To(Equal(int64(1)), name)
+				}
 			})
 
 			It("should return succeeded when all plans complete", func() {

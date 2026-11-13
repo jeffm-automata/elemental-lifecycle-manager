@@ -65,7 +65,8 @@ func KubernetesControlPlane(releaseName, releaseVersion, k8sVersion string, drai
 }
 
 // KubernetesWorker builds a SUC Plan for Kubernetes upgrades on worker nodes.
-func KubernetesWorker(releaseName, releaseVersion, k8sVersion string, drain bool) *upgradecattlev1.Plan {
+// The concurrency is the number of worker nodes that are upgraded at the same time.
+func KubernetesWorker(releaseName, releaseVersion, k8sVersion string, drain bool, concurrency int64) *upgradecattlev1.Plan {
 	controlPlanePlanName := kubernetesControlPlaneName(k8sVersion)
 
 	p := basePlan(kubernetesWorkerName(k8sVersion), drain)
@@ -75,7 +76,7 @@ func KubernetesWorker(releaseName, releaseVersion, k8sVersion string, drain bool
 	}
 
 	p.Spec.Version = k8sVersion
-	p.Spec.Concurrency = 1
+	p.Spec.Concurrency = workerConcurrency(concurrency)
 	p.Spec.NodeSelector = &metav1.LabelSelector{
 		MatchExpressions: []metav1.LabelSelectorRequirement{
 			{

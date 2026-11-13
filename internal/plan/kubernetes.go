@@ -19,6 +19,7 @@ package plan
 
 import (
 	"fmt"
+	"time"
 
 	upgradecattlev1 "github.com/rancher/system-upgrade-controller/pkg/apis/upgrade.cattle.io/v1"
 	lifecyclev1alpha1 "github.com/suse/elemental-lifecycle-manager/api/v1alpha1"
@@ -29,6 +30,12 @@ const (
 	kubernetesControlPlaneBaseName = "elemental-kubernetes-control-plane"
 	kubernetesWorkerBaseName       = "elemental-kubernetes-worker"
 	rke2UpgradeImage               = "rancher/rke2-upgrade"
+
+	// kubernetesJobDeadline is the time a single node is given for its Kubernetes upgrade job: the drain,
+	// the replacement of the Kubernetes distribution, its restart and the pod that confirms the result.
+	// Apart from the drain these steps have been measured to take up to 8 minutes on a control plane node,
+	// so the job gets the full drain timeout plus about twice that.
+	kubernetesJobDeadline = drainTimeout + 15*time.Minute
 )
 
 // kubernetesControlPlaneName returns the full plan name for the given version.
@@ -43,7 +50,7 @@ func kubernetesWorkerName(version string) string {
 
 // KubernetesControlPlane builds a SUC Plan for Kubernetes upgrades on control plane nodes.
 func KubernetesControlPlane(releaseName, releaseVersion, k8sVersion string, drain bool) *upgradecattlev1.Plan {
-	p := basePlan(kubernetesControlPlaneName(k8sVersion), drain)
+	p := basePlan(kubernetesControlPlaneName(k8sVersion), drain, kubernetesJobDeadline)
 	p.Labels = map[string]string{
 		lifecyclev1alpha1.ReleaseNameLabel:    releaseName,
 		lifecyclev1alpha1.ReleaseVersionLabel: lifecyclev1alpha1.SanitizeVersion(releaseVersion),
@@ -69,7 +76,7 @@ func KubernetesControlPlane(releaseName, releaseVersion, k8sVersion string, drai
 func KubernetesWorker(releaseName, releaseVersion, k8sVersion string, drain bool, concurrency int64) *upgradecattlev1.Plan {
 	controlPlanePlanName := kubernetesControlPlaneName(k8sVersion)
 
-	p := basePlan(kubernetesWorkerName(k8sVersion), drain)
+	p := basePlan(kubernetesWorkerName(k8sVersion), drain, kubernetesJobDeadline)
 	p.Labels = map[string]string{
 		lifecyclev1alpha1.ReleaseNameLabel:    releaseName,
 		lifecyclev1alpha1.ReleaseVersionLabel: lifecyclev1alpha1.SanitizeVersion(releaseVersion),

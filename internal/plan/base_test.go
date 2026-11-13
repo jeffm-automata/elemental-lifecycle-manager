@@ -18,6 +18,8 @@ limitations under the License.
 package plan
 
 import (
+	"time"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -26,7 +28,7 @@ import (
 
 var _ = Describe("Base plan tests", func() {
 	It("Properly creates a plan without draining options", func() {
-		plan := basePlan("plan-1", false)
+		plan := basePlan("plan-1", false, 20*time.Minute)
 
 		Expect(plan).ToNot(BeNil())
 		Expect(plan.TypeMeta.Kind).To(Equal("Plan"))
@@ -42,8 +44,15 @@ var _ = Describe("Base plan tests", func() {
 		Expect(plan.Spec.Cordon).To(BeTrue())
 	})
 
+	It("Gives the upgrade jobs of a plan an explicit deadline", func() {
+		plan := basePlan("plan-1", true, 20*time.Minute)
+
+		Expect(plan.Spec.JobActiveDeadlineSecs).ToNot(BeNil())
+		Expect(*plan.Spec.JobActiveDeadlineSecs).To(Equal(int64(1200)))
+	})
+
 	It("Properly creates a plan with draining options", func() {
-		plan := basePlan("plan-1", true)
+		plan := basePlan("plan-1", true, 20*time.Minute)
 
 		Expect(plan).ToNot(BeNil())
 		Expect(plan.TypeMeta.Kind).To(Equal("Plan"))

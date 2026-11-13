@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -165,6 +166,16 @@ upgrader "$INCOMING" && chroot /host reboot
 			Expect(plan.Spec.Prepare.Args[0]).ToNot(ContainSubstring("reboot"))
 		})
 
+		It("gives the upgrade job of a node enough time", func() {
+			Expect(plan.Spec.JobActiveDeadlineSecs).ToNot(BeNil())
+			Expect(*plan.Spec.JobActiveDeadlineSecs).To(Equal(int64(2700)))
+
+			By("leaving room for a drain that takes its full timeout")
+			timeout, err := time.ParseDuration(plan.Spec.Drain.Timeout.String())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(time.Duration(*plan.Spec.JobActiveDeadlineSecs) * time.Second).To(BeNumerically(">", timeout))
+		})
+
 		It("enables drain with correct settings", func() {
 			Expect(plan.Spec.Drain).ToNot(BeNil())
 			Expect(ptr.Deref(plan.Spec.Drain.DeleteEmptydirData, false)).To(BeTrue())
@@ -227,6 +238,16 @@ upgrader "$INCOMING" && chroot /host reboot
 			Expect(plan.Spec.Prepare.Args).To(Equal([]string{osPrepareScript}))
 			Expect(plan.Spec.Prepare.Args[0]).ToNot(ContainSubstring("upgrader"))
 			Expect(plan.Spec.Prepare.Args[0]).ToNot(ContainSubstring("reboot"))
+		})
+
+		It("gives the upgrade job of a node enough time", func() {
+			Expect(plan.Spec.JobActiveDeadlineSecs).ToNot(BeNil())
+			Expect(*plan.Spec.JobActiveDeadlineSecs).To(Equal(int64(2700)))
+
+			By("leaving room for a drain that takes its full timeout")
+			timeout, err := time.ParseDuration(plan.Spec.Drain.Timeout.String())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(time.Duration(*plan.Spec.JobActiveDeadlineSecs) * time.Second).To(BeNumerically(">", timeout))
 		})
 
 		It("enables drain with correct settings", func() {

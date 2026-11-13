@@ -24,6 +24,7 @@ import (
 	"os"
 	"strconv"
 	"text/template"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
 	upgradecattlev1 "github.com/rancher/system-upgrade-controller/pkg/apis/upgrade.cattle.io/v1"
@@ -35,6 +36,12 @@ const (
 	osControlPlaneBaseName = "elemental-os-control-plane"
 	osWorkerBaseName       = "elemental-os-worker"
 	osUpgradeShell         = "/bin/sh"
+
+	// osJobDeadline is the time a single node is given for its OS upgrade job: the pull of the OS image,
+	// the drain, the transaction, the reboot and the pod that confirms the result once the node is back.
+	// Apart from the drain these steps have been measured to take up to 15 minutes on a node whose
+	// cluster was degraded by the upgrade itself, so the job gets the full drain timeout plus twice that.
+	osJobDeadline = drainTimeout + 30*time.Minute
 	// osPrepareScript is the command of the prepare container of OS plans. The container has
 	// nothing to do, it only exists so that the OS image is pulled before the node is drained.
 	osPrepareScript = `echo "OS image is available on the node"`
@@ -60,7 +67,7 @@ func OSControlPlane(releaseName, osImage, osVersion, releaseVersion string, drai
 		return nil, fmt.Errorf("parsing OS upgrade script: %w", err)
 	}
 
-	p := basePlan(osControlPlaneName(osVersion), drain)
+	p := basePlan(osControlPlaneName(osVersion), drain, osJobDeadline)
 	p.Labels = map[string]string{
 		lifecyclev1alpha1.ReleaseNameLabel:    releaseName,
 		lifecyclev1alpha1.ReleaseVersionLabel: lifecyclev1alpha1.SanitizeVersion(releaseVersion),
@@ -92,7 +99,7 @@ func OSWorker(releaseName, osImage, osVersion, releaseVersion string, drain bool
 		return nil, fmt.Errorf("parsing OS upgrade script: %w", err)
 	}
 
-	p := basePlan(osWorkerName(osVersion), drain)
+	p := basePlan(osWorkerName(osVersion), drain, osJobDeadline)
 	p.Labels = map[string]string{
 		lifecyclev1alpha1.ReleaseNameLabel:    releaseName,
 		lifecyclev1alpha1.ReleaseVersionLabel: lifecyclev1alpha1.SanitizeVersion(releaseVersion),

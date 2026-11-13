@@ -23,6 +23,7 @@ spec:
   version: "1.0.0"
   registry: "registry.example.org/project/release-manifest"
   disableDrain: true
+  workerConcurrency: 2
   componentConfiguration:
     helm:
     - chart: example
@@ -44,7 +45,17 @@ spec:
 | `spec.version`      | Target version of the release. Use semantic versioning, when possible.  | `true`   |
 | `spec.registry`     | OCI registry from which LCM will fetch the release metadata. Metadata must be defined in the form of a [release manifest](https://github.com/SUSE/elemental/blob/main/docs/release-manifest.md).   | `true`   |
 | `spec.disableDrain` | Disables node drains during upgrade phases. Defaults to `false`.        | `false`  |
+| `spec.workerConcurrency` | Maximum number of worker nodes upgraded at the same time during the operating system and Kubernetes upgrade phases. Must be `1` or greater. Defaults to `1`. See [Worker Concurrency](#worker-concurrency). | `false`  |
 | `spec.componentConfiguration.helm` | Provide configurations to Helm chart components specified in the release. | `false` |
+
+### Worker Concurrency
+
+By default LCM upgrades the nodes of a cluster one at a time. `spec.workerConcurrency` raises the number of **worker** nodes that are upgraded at the same time. Control plane nodes are always upgraded one at a time, and worker nodes are only upgraded after all control plane nodes.
+
+When setting this field, consider the following:
+
+* All worker nodes that are upgraded at the same time are cordoned and, unless draining is disabled, drained together. The remaining nodes must have the capacity to run the evicted workloads, and `PodDisruptionBudgets` must allow the evictions. A drain that cannot complete blocks the upgrade of that node.
+* The value is applied when LCM creates the [SUC Plans](https://github.com/rancher/system-upgrade-controller/tree/master#api-documentation) for an operating system or Kubernetes version. Plans that already exist for the same version are not changed.
 
 ### Component Configurations
 

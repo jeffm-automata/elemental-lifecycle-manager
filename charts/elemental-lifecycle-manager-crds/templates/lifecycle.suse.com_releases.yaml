@@ -110,6 +110,15 @@ spec:
               version:
                 description: Version specifies the target version of the target release.
                 type: string
+              workerConcurrency:
+                description: |-
+                  WorkerConcurrency specifies the maximum number of worker nodes that are
+                  upgraded at the same time during the operating system and Kubernetes upgrade phases.
+                  Control plane nodes are always upgraded one at a time.
+                  Defaults to 1.
+                format: int32
+                minimum: 1
+                type: integer
             required:
             - registry
             - version

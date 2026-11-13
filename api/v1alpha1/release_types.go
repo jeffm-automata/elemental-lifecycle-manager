@@ -100,6 +100,13 @@ type ReleaseSpec struct {
 	// DisableDrain specifies whether nodes drain should be disabled.
 	// +optional
 	DisableDrain bool `json:"disableDrain"`
+	// WorkerConcurrency specifies the maximum number of worker nodes that are
+	// upgraded at the same time during the operating system and Kubernetes upgrade phases.
+	// Control plane nodes are always upgraded one at a time.
+	// Defaults to 1.
+	// +optional
+	// +kubebuilder:validation:Minimum=1
+	WorkerConcurrency *int32 `json:"workerConcurrency,omitempty"`
 	// ComponentConfig allows for additional configuration for components
 	// defined in the target release.
 	// +optional

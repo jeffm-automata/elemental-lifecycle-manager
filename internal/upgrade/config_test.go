@@ -168,6 +168,35 @@ var _ = Describe("Configuration creation", func() {
 		Expect(err).To(MatchError(ConfigError("circular dependency detected involving chart chart1")))
 	})
 
+	It("Should apply the requested worker concurrency to the OS and Kubernetes upgrades", func() {
+		resolvedManifest := &resolver.ResolvedManifest{CorePlatform: corePlatformManifest}
+		runtimeConfig := &RuntimeConfig{
+			DrainOpts:         &DrainOpts{ControlPlane: true, Worker: true},
+			WorkerConcurrency: 3,
+		}
+
+		config, err := NewConfig(resolvedManifest, releaseVersion, types.NamespacedName{}, runtimeConfig)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(config.OS.WorkerConcurrency).To(Equal(int64(3)))
+		Expect(config.Kubernetes.WorkerConcurrency).To(Equal(int64(3)))
+	})
+
+	It("Should upgrade one worker at a time for worker concurrency values lower than one", func() {
+		resolvedManifest := &resolver.ResolvedManifest{CorePlatform: corePlatformManifest}
+
+		for _, concurrency := range []int64{0, -1} {
+			runtimeConfig := &RuntimeConfig{
+				DrainOpts:         &DrainOpts{ControlPlane: true, Worker: true},
+				WorkerConcurrency: concurrency,
+			}
+
+			config, err := NewConfig(resolvedManifest, releaseVersion, types.NamespacedName{}, runtimeConfig)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(config.OS.WorkerConcurrency).To(Equal(DefaultWorkerConcurrency))
+			Expect(config.Kubernetes.WorkerConcurrency).To(Equal(DefaultWorkerConcurrency))
+		}
+	})
+
 	It("Should construct a correct upgrade configuration", func() {
 		resolvedManifest := &resolver.ResolvedManifest{CorePlatform: corePlatformManifest, SolutionExtension: solutionExtension}
 		runtimeSecretValues := &RuntimeSecretValueSource{
@@ -196,12 +225,14 @@ var _ = Describe("Configuration creation", func() {
 		Expect(osConfig.DrainOpts).To(Equal(runtimeConfig.DrainOpts))
 		Expect(osConfig.Image).To(Equal(baseOSImage))
 		Expect(osConfig.Version).To(Equal(baseOSVersion))
+		Expect(osConfig.WorkerConcurrency).To(Equal(DefaultWorkerConcurrency))
 
 		// K8s validation
 		k8sConfig := config.Kubernetes
 		Expect(k8sConfig.DrainOpts).To(Equal(runtimeConfig.DrainOpts))
 		Expect(k8sConfig.Image).To(Equal(k8sImage))
 		Expect(k8sConfig.Version).To(Equal(k8sVersion))
+		Expect(k8sConfig.WorkerConcurrency).To(Equal(DefaultWorkerConcurrency))
 
 		// Helm validation
 		Expect(config.HelmCharts).To(HaveLen(2))

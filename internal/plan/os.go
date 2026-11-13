@@ -85,7 +85,8 @@ func OSControlPlane(releaseName, osImage, osVersion, releaseVersion string, drai
 }
 
 // OSWorker builds a SUC Plan for OS upgrades on worker nodes.
-func OSWorker(releaseName, osImage, osVersion, releaseVersion string, drain bool) (*upgradecattlev1.Plan, error) {
+// The concurrency is the number of worker nodes that are upgraded at the same time.
+func OSWorker(releaseName, osImage, osVersion, releaseVersion string, drain bool, concurrency int64) (*upgradecattlev1.Plan, error) {
 	script, err := parseUpgradeScript(osImage)
 	if err != nil {
 		return nil, fmt.Errorf("parsing OS upgrade script: %w", err)
@@ -97,7 +98,7 @@ func OSWorker(releaseName, osImage, osVersion, releaseVersion string, drain bool
 		lifecyclev1alpha1.ReleaseVersionLabel: lifecyclev1alpha1.SanitizeVersion(releaseVersion),
 	}
 	p.Spec.Version = osVersion
-	p.Spec.Concurrency = 1
+	p.Spec.Concurrency = workerConcurrency(concurrency)
 	p.Spec.NodeSelector = &metav1.LabelSelector{
 		MatchExpressions: []metav1.LabelSelectorRequirement{
 			{

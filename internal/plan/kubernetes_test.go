@@ -114,7 +114,7 @@ var _ = Describe("Kubernetes plan tests", func() {
 		var plan *upgradecattlev1.Plan
 
 		BeforeAll(func() {
-			plan = KubernetesWorker(releaseName, releaseVersion, k8sVersion, drain)
+			plan = KubernetesWorker(releaseName, releaseVersion, k8sVersion, drain, 1)
 		})
 
 		It("creates a plan with correct metadata", func() {
@@ -153,6 +153,20 @@ var _ = Describe("Kubernetes plan tests", func() {
 			Expect(ptr.Deref(plan.Spec.Drain.IgnoreDaemonSets, false)).To(BeTrue())
 			Expect(plan.Spec.Drain.Force).To(BeTrue())
 			Expect(plan.Spec.Drain.Timeout.String()).To(Equal("15m"))
+		})
+	})
+
+	Describe("Worker concurrency", func() {
+		It("upgrades the requested number of worker nodes at the same time", func() {
+			worker := KubernetesWorker(releaseName, releaseVersion, k8sVersion, drain, 3)
+			Expect(worker.Spec.Concurrency).To(Equal(int64(3)))
+		})
+
+		It("falls back to one worker node at a time for invalid values", func() {
+			for _, concurrency := range []int64{0, -2} {
+				worker := KubernetesWorker(releaseName, releaseVersion, k8sVersion, drain, concurrency)
+				Expect(worker.Spec.Concurrency).To(Equal(int64(1)))
+			}
 		})
 	})
 })

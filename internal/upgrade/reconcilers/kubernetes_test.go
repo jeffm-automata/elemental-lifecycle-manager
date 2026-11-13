@@ -20,6 +20,7 @@ package reconcilers_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -190,6 +191,44 @@ var _ = Describe("KubernetesReconciler", func() {
 				Expect(planNames).To(HaveLen(2))
 				Expect(planNames[0]).To(ContainSubstring("control-plane"))
 				Expect(planNames[1]).To(ContainSubstring("worker"))
+			})
+
+			It("should apply the worker concurrency to the worker plan only", func() {
+				config.Kubernetes.WorkerConcurrency = 2
+
+				mockPackagedHandler.ReconcileAvailabilityFn = func(ctx context.Context, targetVersion string, snapshot *reconcilers.PackagedComponentsSnapshot) (*upgrade.PhaseStatus, error) {
+					return &upgrade.PhaseStatus{
+						State:   lifecyclev1alpha1.K8sPackagedComponentsAvailable,
+						Message: testComponentsAvailable,
+					}, nil
+				}
+
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("cp1", true, testutil.WithVersion(testOldK8sVersion)))).To(Succeed())
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("worker1", false, testutil.WithVersion(testOldK8sVersion)))).To(Succeed())
+
+				concurrency := map[string]int64{}
+				mockPlanRec.ReconcileFn = func(ctx context.Context, desired *upgradecattlev1.Plan) (*reconcilers.PlanResult, error) {
+					concurrency[desired.Name] = desired.Spec.Concurrency
+					return &reconcilers.PlanResult{
+						Status: &upgrade.PhaseStatus{
+							State:   lifecyclev1alpha1.PlanComplete,
+							Message: testCompleteMsg,
+						},
+						Nodes: []corev1.Node{*testutil.NewTestNode("upgraded", true, testutil.WithVersion(testK8sVersion))},
+					}, nil
+				}
+
+				_, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(concurrency).To(HaveLen(2))
+				for name, value := range concurrency {
+					if strings.Contains(name, "worker") {
+						Expect(value).To(Equal(int64(2)), name)
+					} else {
+						Expect(value).To(Equal(int64(1)), name)
+					}
+				}
 			})
 
 			It("should wait for control-plane before starting worker", func() {
@@ -451,7 +490,7 @@ var _ = Describe("KubernetesReconciler", func() {
 				Expect(fakeClient.Create(ctx, testutil.NewTestNode("cp1", true, testutil.WithVersion(testK8sVersion)))).To(Succeed())
 				Expect(fakeClient.Create(ctx, testutil.NewTestNode("worker1", false, testutil.WithVersion(testK8sVersion)))).To(Succeed())
 
-				existing := plan.KubernetesWorker(config.ReleaseNamespacedName.Name, config.ReleaseVersion, config.Kubernetes.Version, false)
+				existing := plan.KubernetesWorker(config.ReleaseNamespacedName.Name, config.ReleaseVersion, config.Kubernetes.Version, false, 1)
 				Expect(fakeClient.Create(ctx, existing)).To(Succeed())
 
 				status, err := reconciler.Reconcile(ctx, config)

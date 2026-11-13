@@ -193,7 +193,7 @@ func (r *KubernetesReconciler) preparePlans(ctx context.Context, config *upgrade
 	}
 
 	if !isControlPlaneOnlyCluster(allNodes.Items) {
-		wkPlan := plan.KubernetesWorker(config.ReleaseNamespacedName.Name, config.ReleaseVersion, k8sConfig.Version, k8sConfig.DrainOpts.Worker)
+		wkPlan := plan.KubernetesWorker(config.ReleaseNamespacedName.Name, config.ReleaseVersion, k8sConfig.Version, k8sConfig.DrainOpts.Worker, k8sConfig.WorkerConcurrency)
 		planList = append(planList, wkPlan)
 	}
 

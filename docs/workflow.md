@@ -30,6 +30,8 @@ After each plan is deployed, SUC creates the corresponding upgrade workloads for
 
 Before a node is cordoned and drained, its workload pulls the operating system image of the desired release in a preparation step. The time it takes to download the image is therefore not part of the time during which the node is unavailable for its regular workloads.
 
+Each workload has to finish within 45 minutes. This covers everything it does on its node: pulling the operating system image, the drain, which may take up to 15 minutes, the upgrade, the reboot and the confirmation that the node runs the new image.
+
 A workload does not upgrade a node that already runs the operating system image of the desired release. It determines this from the files that the [SUSE/elemental](https://github.com/SUSE/elemental/tree/main) tool stack keeps in `/etc/elemental` on the node:
 
 * A node that was upgraded before records the image it was upgraded to as `sourceOS` in `deployment.yaml`.
@@ -57,6 +59,8 @@ Otherwise, for the Kubernetes version upgrade, LCM proceeds to create [SUC Plans
 LCM deploys the aforementioned `SUC Plans` in **sequence**, where the `worker` node plan is **only** deployed if the `control-plane` node plan has been marked as completed, signaling that all `control-plane` nodes are successfully upgraded.
 
 After each plan is deployed, SUC creates the corresponding upgrade workloads for the targeted node group. Each workload handles a single node, and SUC creates them **sequentially**, ensuring that nodes within the group are upgraded one at a time. For `worker` nodes, the number of nodes upgraded at the same time can be raised by setting `spec.workerConcurrency` on the [`Release`](release-api.md#worker-concurrency) resource. Each created workload uses the [rancher/rke2-upgrade](https://github.com/rancher/rke2-upgrade/tree/master) tool stack to perform the necessary upgrade steps.
+
+Each workload has to finish within 30 minutes, which includes a drain of up to 15 minutes.
 
 While the node-level upgrades are running, the `Helm Controller` creates workloads that upgrade the Kubernetes packaged components to the versions expected by the desired Kubernetes release. These packaged components are core Kubernetes components shipped with the distribution and required for the cluster to function.
 

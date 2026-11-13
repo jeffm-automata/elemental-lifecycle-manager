@@ -19,6 +19,8 @@ package reconcilers_test
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -27,12 +29,29 @@ import (
 	lifecyclev1alpha1 "github.com/suse/elemental-lifecycle-manager/api/v1alpha1"
 	"github.com/suse/elemental-lifecycle-manager/internal/upgrade/reconcilers"
 	"github.com/suse/elemental-lifecycle-manager/internal/upgrade/reconcilers/testutil"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// newPlanJob returns a job that SUC would have created to apply the given plan,
+// in the given final state, or still running for an empty state.
+func newPlanJob(plan *upgradecattlev1.Plan, name string, state batchv1.JobConditionType) *batchv1.Job {
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "apply-" + plan.Name + "-" + name,
+			Namespace: plan.Namespace,
+			Labels:    map[string]string{"upgrade.cattle.io/plan": plan.Name},
+		},
+	}
+	if state != "" {
+		job.Status.Conditions = []batchv1.JobCondition{{Type: state, Status: corev1.ConditionTrue}}
+	}
+	return job
+}
 
 const (
 	testLabelKey    = "test"
@@ -157,6 +176,7 @@ var _ = Describe("SUCPlanReconciler", func() {
 				},
 			}
 			Expect(fakeClient.Create(ctx, desiredPlan)).To(Succeed())
+			Expect(fakeClient.Create(ctx, newPlanJob(desiredPlan, "failed", batchv1.JobFailed))).To(Succeed())
 			result, err := reconciler.Reconcile(ctx, desiredPlan)
 
 			Expect(err).NotTo(HaveOccurred())
@@ -167,11 +187,28 @@ var _ = Describe("SUCPlanReconciler", func() {
 
 		Context("when a job of the plan has failed", func() {
 			const (
+				retryPending     = ". Retry 1 of 3 follows once the failed job has been removed"
 				failedNode       = "failed-node"
 				jobFailedMessage = "Job cattle-system/apply-test-plan-on-failed-node failed on Node failed-node: DeadlineExceeded: Job was active longer than specified deadline"
 			)
 
+			var (
+				failedJob *batchv1.Job
+				now       time.Time
+			)
+
+			// planRetries returns the retries recorded on the plan, and whether one has been requested at all.
+			planRetries := func() (string, bool) {
+				stored := &upgradecattlev1.Plan{}
+				Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(desiredPlan), stored)).To(Succeed())
+				retries, ok := stored.Annotations[reconcilers.PlanRetriesAnnotation]
+				return retries, ok
+			}
+
 			BeforeEach(func() {
+				now = time.Date(2026, 11, 13, 9, 15, 0, 0, time.UTC)
+				reconciler.Now = func() time.Time { return now }
+
 				// SUC keeps the node of the failed job in the list of nodes the plan is applied on.
 				desiredPlan.Status.Applying = []string{failedNode}
 				desiredPlan.Status.Conditions = []genericcondition.GenericCondition{
@@ -183,6 +220,10 @@ var _ = Describe("SUCPlanReconciler", func() {
 					},
 				}
 				Expect(fakeClient.Create(ctx, desiredPlan)).To(Succeed())
+
+				// SUC keeps the failed job for some time as well.
+				failedJob = newPlanJob(desiredPlan, "failed", batchv1.JobFailed)
+				Expect(fakeClient.Create(ctx, failedJob)).To(Succeed())
 			})
 
 			It("should return failed status although the plan is still applying on the node", func() {
@@ -193,7 +234,7 @@ var _ = Describe("SUCPlanReconciler", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.Status.State).To(Equal(lifecyclev1alpha1.UpgradeFailed))
-				Expect(result.Status.Message).To(Equal("Plan test-plan failed: " + jobFailedMessage))
+				Expect(result.Status.Message).To(Equal("Plan test-plan failed: " + jobFailedMessage + retryPending))
 				Expect(result.Nodes).To(BeEmpty())
 			})
 
@@ -207,7 +248,7 @@ var _ = Describe("SUCPlanReconciler", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.Status.State).To(Equal(lifecyclev1alpha1.UpgradeFailed))
-				Expect(result.Status.Message).To(Equal("Plan test-plan failed: " + jobFailedMessage + ". Still cordoned: " + failedNode))
+				Expect(result.Status.Message).To(Equal("Plan test-plan failed: " + jobFailedMessage + ". Still cordoned: " + failedNode + retryPending))
 			})
 
 			It("should find the node of the failed job by its hostname", func() {
@@ -219,7 +260,7 @@ var _ = Describe("SUCPlanReconciler", func() {
 				result, err := reconciler.Reconcile(ctx, desiredPlan)
 
 				Expect(err).NotTo(HaveOccurred())
-				Expect(result.Status.Message).To(HaveSuffix(". Still cordoned: " + failedNode))
+				Expect(result.Status.Message).To(ContainSubstring(". Still cordoned: " + failedNode))
 			})
 
 			It("should report that the node of the failed job is gone", func() {
@@ -229,7 +270,167 @@ var _ = Describe("SUCPlanReconciler", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.Status.State).To(Equal(lifecyclev1alpha1.UpgradeFailed))
-				Expect(result.Status.Message).To(HaveSuffix(". No longer part of the cluster: " + failedNode))
+				Expect(result.Status.Message).To(ContainSubstring(". No longer part of the cluster: " + failedNode))
+			})
+
+			It("should not request a retry while the failed job exists", func() {
+				_, err := reconciler.Reconcile(ctx, desiredPlan)
+				Expect(err).NotTo(HaveOccurred())
+
+				_, requested := planRetries()
+				Expect(requested).To(BeFalse())
+			})
+
+			It("should request a retry once the failed job has been removed", func() {
+				Expect(fakeClient.Delete(ctx, failedJob)).To(Succeed())
+
+				result, err := reconciler.Reconcile(ctx, desiredPlan)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+				Expect(result.Status.Message).To(Equal("Retry 1 of 3 in progress after: Plan test-plan failed: " + jobFailedMessage + ". No longer part of the cluster: " + failedNode))
+
+				retries, requested := planRetries()
+				Expect(requested).To(BeTrue())
+				Expect(retries).To(Equal("1"))
+
+				stored := &upgradecattlev1.Plan{}
+				Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(desiredPlan), stored)).To(Succeed())
+				Expect(stored.Annotations).To(HaveKeyWithValue(reconcilers.PlanRetryRequestedAtAnnotation, "2026-11-13T09:15:00Z"))
+			})
+
+			It("should request a retry only once while SUC has not started its job yet", func() {
+				Expect(fakeClient.Delete(ctx, failedJob)).To(Succeed())
+
+				for range 3 {
+					result, err := reconciler.Reconcile(ctx, desiredPlan)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result.Status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+					now = now.Add(30 * time.Second)
+				}
+
+				retries, _ := planRetries()
+				Expect(retries).To(Equal("1"))
+			})
+
+			It("should report the retry as in progress while its job runs, however long that takes", func() {
+				Expect(fakeClient.Delete(ctx, failedJob)).To(Succeed())
+				_, err := reconciler.Reconcile(ctx, desiredPlan)
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(fakeClient.Create(ctx, newPlanJob(desiredPlan, "retry", ""))).To(Succeed())
+				now = now.Add(40 * time.Minute)
+
+				result, err := reconciler.Reconcile(ctx, desiredPlan)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+				Expect(result.Status.Message).To(HavePrefix("Retry 1 of 3 in progress after: Plan test-plan failed: "))
+
+				retries, _ := planRetries()
+				Expect(retries).To(Equal("1"))
+			})
+
+			It("should request another retry when SUC did not start a job for the previous one", func() {
+				Expect(fakeClient.Delete(ctx, failedJob)).To(Succeed())
+				_, err := reconciler.Reconcile(ctx, desiredPlan)
+				Expect(err).NotTo(HaveOccurred())
+
+				now = now.Add(3 * time.Minute)
+				result, err := reconciler.Reconcile(ctx, desiredPlan)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+				retries, _ := planRetries()
+				Expect(retries).To(Equal("2"))
+			})
+
+			It("should report the failure of a retry and retry again, up to the limit", func() {
+				for retry := 1; retry <= reconcilers.MaxPlanRetries; retry++ {
+					By(fmt.Sprintf("removing the failed job and requesting retry %d", retry))
+					Expect(fakeClient.Delete(ctx, failedJob)).To(Succeed())
+					result, err := reconciler.Reconcile(ctx, desiredPlan)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result.Status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+					Expect(result.Status.Message).To(HavePrefix(fmt.Sprintf("Retry %d of 3 in progress", retry)))
+
+					By("failing the job of the retry")
+					failedJob = newPlanJob(desiredPlan, fmt.Sprintf("failed-%d", retry), batchv1.JobFailed)
+					Expect(fakeClient.Create(ctx, failedJob)).To(Succeed())
+					now = now.Add(45 * time.Minute)
+
+					result, err = reconciler.Reconcile(ctx, desiredPlan)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(result.Status.State).To(Equal(lifecyclev1alpha1.UpgradeFailed))
+				}
+
+				By("giving up while the last failed job exists")
+				result, err := reconciler.Reconcile(ctx, desiredPlan)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Status.State).To(Equal(lifecyclev1alpha1.UpgradeFailed))
+				Expect(result.Status.Message).To(HaveSuffix(". Giving up after 3 retries"))
+
+				By("giving up after the last failed job has been removed")
+				Expect(fakeClient.Delete(ctx, failedJob)).To(Succeed())
+				now = now.Add(15 * time.Minute)
+				result, err = reconciler.Reconcile(ctx, desiredPlan)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Status.State).To(Equal(lifecyclev1alpha1.UpgradeFailed))
+				Expect(result.Status.Message).To(HaveSuffix(". Giving up after 3 retries"))
+
+				retries, _ := planRetries()
+				Expect(retries).To(Equal("3"))
+
+				By("retrying again after the record of the retries has been removed from the plan")
+				stored := &upgradecattlev1.Plan{}
+				Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(desiredPlan), stored)).To(Succeed())
+				delete(stored.Annotations, reconcilers.PlanRetriesAnnotation)
+				Expect(fakeClient.Update(ctx, stored)).To(Succeed())
+
+				result, err = reconciler.Reconcile(ctx, desiredPlan)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+				Expect(result.Status.Message).To(HavePrefix("Retry 1 of 3 in progress"))
+			})
+
+			It("should ignore the jobs of other plans", func() {
+				Expect(fakeClient.Delete(ctx, failedJob)).To(Succeed())
+				other := testutil.NewTestSUCPlan("other-plan", "default")
+				Expect(fakeClient.Create(ctx, newPlanJob(other, "failed", batchv1.JobFailed))).To(Succeed())
+
+				result, err := reconciler.Reconcile(ctx, desiredPlan)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+				retries, _ := planRetries()
+				Expect(retries).To(Equal("1"))
+			})
+		})
+
+		Context("when a plan that has been retried completes", func() {
+			It("should forget the retries", func() {
+				desiredPlan.Annotations = map[string]string{
+					reconcilers.PlanRetriesAnnotation:          "2",
+					reconcilers.PlanRetryRequestedAtAnnotation: "2026-11-13T09:15:00Z",
+					"example.com/keep":                         "me",
+				}
+				desiredPlan.Status.Conditions = []genericcondition.GenericCondition{
+					{
+						Type:   string(upgradecattlev1.PlanComplete),
+						Status: corev1.ConditionTrue,
+						Reason: "Complete",
+					},
+				}
+				Expect(fakeClient.Create(ctx, desiredPlan)).To(Succeed())
+
+				result, err := reconciler.Reconcile(ctx, desiredPlan)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Status.State).To(Equal(lifecyclev1alpha1.PlanComplete))
+
+				stored := &upgradecattlev1.Plan{}
+				Expect(fakeClient.Get(ctx, client.ObjectKeyFromObject(desiredPlan), stored)).To(Succeed())
+				Expect(stored.Annotations).To(Equal(map[string]string{"example.com/keep": "me"}))
 			})
 		})
 

@@ -28,6 +28,7 @@ import (
 	"github.com/suse/elemental-lifecycle-manager/internal/plan"
 	"github.com/suse/elemental-lifecycle-manager/internal/upgrade"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -112,6 +113,27 @@ func (r *KubernetesReconciler) Reconcile(ctx context.Context, config *upgrade.Co
 		return nil, fmt.Errorf("preparing Kubernetes upgrade plans: %w", err)
 	}
 
+	// Nodes that already run the target version need neither an upgrade job nor the
+	// cordon and drain that precede it, so only reconcile the plans when there is work for them.
+	required, nodes, err := r.plansRequired(ctx, plans, k8sConfig.Version)
+	if err != nil {
+		return nil, fmt.Errorf("determining whether Kubernetes upgrade plans are required: %w", err)
+	}
+
+	if !required {
+		logger.Info("All nodes already run the target Kubernetes version, skipping upgrade plans",
+			"version", k8sConfig.Version)
+		plans = nil
+
+		// Without plans there is no upgrade to wait for, but the phase still only succeeds for a healthy cluster.
+		if !allNodesAtKubernetesVersion(nodes, k8sConfig.Version) {
+			return &upgrade.PhaseStatus{
+				State:   lifecyclev1alpha1.UpgradeInProgress,
+				Message: fmt.Sprintf("All nodes already run Kubernetes %s, waiting for them to be ready and schedulable", k8sConfig.Version),
+			}, nil
+		}
+	}
+
 	// Reconcile each plan in the prepared list.
 	for _, p := range plans {
 		result, err := r.sucReconciler.Reconcile(ctx, p)
@@ -176,6 +198,45 @@ func (r *KubernetesReconciler) preparePlans(ctx context.Context, config *upgrade
 	}
 
 	return planList, nil
+}
+
+// plansRequired reports whether the given Kubernetes SUC Plans have to be reconciled,
+// together with the nodes of the cluster that the decision is based on.
+//
+// SUC applies a Plan to every node matched by its selector and has no means of skipping the
+// cordon and drain for a node on which the upgrade job would have nothing to do. Plans are therefore
+// not created at all when the kubelet of every node already reports the target version.
+//
+// Plans that already exist are always reconciled, so that an upgrade which has been started
+// is tracked until its Plans complete. The decision is made for the cluster as a whole, because the
+// worker Plan waits for the control plane Plan to exist before it lets the workers proceed.
+func (r *KubernetesReconciler) plansRequired(ctx context.Context, plans []*upgradecattlev1.Plan, targetVersion string) (bool, []corev1.Node, error) {
+	for _, p := range plans {
+		err := r.Get(ctx, client.ObjectKeyFromObject(p), &upgradecattlev1.Plan{})
+		if err == nil {
+			return true, nil, nil
+		}
+		if !apierrors.IsNotFound(err) {
+			return false, nil, fmt.Errorf("retrieving plan %q: %w", p.Name, err)
+		}
+	}
+
+	allNodes := &corev1.NodeList{}
+	if err := r.List(ctx, allNodes); err != nil {
+		return false, nil, fmt.Errorf("listing cluster nodes: %w", err)
+	}
+
+	if len(allNodes.Items) == 0 {
+		return true, nil, nil
+	}
+
+	for _, node := range allNodes.Items {
+		if !kubeletVersionMatches(node.Status.NodeInfo.KubeletVersion, targetVersion) {
+			return true, nil, nil
+		}
+	}
+
+	return false, allNodes.Items, nil
 }
 
 // allNodesAtKubernetesVersion returns true if all nodes have the target Kubernetes version.

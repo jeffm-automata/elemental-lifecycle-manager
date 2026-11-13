@@ -123,12 +123,36 @@ var _ = Describe("SUCPlanReconciler", func() {
 			Expect(result.Status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
 		})
 
+		DescribeTable("should return in-progress status for a plan that SUC is still working on",
+			func(reason, message string) {
+				desiredPlan.Status.Conditions = []genericcondition.GenericCondition{
+					{
+						Type:    string(upgradecattlev1.PlanComplete),
+						Status:  corev1.ConditionFalse,
+						Reason:  reason,
+						Message: message,
+					},
+				}
+				Expect(fakeClient.Create(ctx, desiredPlan)).To(Succeed())
+				result, err := reconciler.Reconcile(ctx, desiredPlan)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+				Expect(result.Status.Message).NotTo(ContainSubstring("failed"))
+			},
+			Entry("whose version has just been resolved", "Resolved", ""),
+			Entry("whose jobs have just been synced", "SyncJob", ""),
+			Entry("that is not validated or resolved yet", "NotReady", "plan is not valid and resolved"),
+			Entry("that waits for its time window", "Waiting", "plan is outside of set time window"),
+			Entry("whose nodes could not be selected", "SelectNodesFailed", "cache is not ready"),
+		)
+
 		It("should return failed status with message", func() {
 			desiredPlan.Status.Conditions = []genericcondition.GenericCondition{
 				{
 					Type:    string(upgradecattlev1.PlanComplete),
 					Status:  corev1.ConditionFalse,
-					Reason:  "UpgradeFailed",
+					Reason:  "JobFailed",
 					Message: "upgrade script exited with code 1",
 				},
 			}

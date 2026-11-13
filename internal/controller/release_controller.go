@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -51,6 +52,13 @@ import (
 
 const requeueInterval = 30 * time.Second
 
+const (
+	// eventReasonUpgradeFailed is the reason of the events emitted when an upgrade condition fails.
+	eventReasonUpgradeFailed = "UpgradeFailed"
+	// eventActionUpgrade is the action of the events emitted about the upgrade to a release.
+	eventActionUpgrade = "Upgrade"
+)
+
 // ReleaseReconciler reconciles a Release object
 type ReleaseReconciler struct {
 	client.Client
@@ -66,6 +74,9 @@ type ReleaseReconciler struct {
 
 	// ChartVersion is the version of the Elemental Lifecycle Manager chart that this process was deployed from.
 	ChartVersion string
+
+	// Recorder emits events about the Release resource. Optional.
+	Recorder events.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=lifecycle.suse.com,resources=releases,verbs=get;list;watch;create;update;patch;delete
@@ -77,6 +88,7 @@ type ReleaseReconciler struct {
 // +kubebuilder:rbac:groups=upgrade.cattle.io,resources=plans,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=helm.cattle.io,resources=helmcharts,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:urls=/version,verbs=get
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -101,6 +113,8 @@ func (r *ReleaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if statusErr := r.updateReleaseStatus(ctx, req.NamespacedName, release.Status); statusErr != nil {
 			return ctrl.Result{}, errors.Join(err, statusErr)
 		}
+
+		r.recordFailures(release, originalStatus.Conditions)
 	}
 
 	// Handle reconcileNormal errors only when the Release status has been updated (if needed).
@@ -109,6 +123,29 @@ func (r *ReleaseReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	return result, nil
+}
+
+// recordFailures emits a warning event for every upgrade condition of the Release that has
+// failed, or that has failed for another reason, since the given previous conditions.
+func (r *ReleaseReconciler) recordFailures(release *lifecyclev1alpha1.Release, previous []metav1.Condition) {
+	if r.Recorder == nil {
+		return
+	}
+
+	for _, cond := range release.Status.Conditions {
+		// The 'Applied' condition only repeats which of the other conditions has failed.
+		if cond.Type == lifecyclev1alpha1.ConditionApplied || cond.Reason != lifecyclev1alpha1.UpgradeFailed {
+			continue
+		}
+
+		before := apimeta.FindStatusCondition(previous, cond.Type)
+		if before != nil && before.Reason == cond.Reason && before.Message == cond.Message {
+			continue
+		}
+
+		r.Recorder.Eventf(release, nil, corev1.EventTypeWarning, eventReasonUpgradeFailed, eventActionUpgrade,
+			"%s: %s", cond.Type, cond.Message)
+	}
 }
 
 func (r *ReleaseReconciler) reconcileNormal(ctx context.Context, release *lifecyclev1alpha1.Release) (ctrl.Result, error) {

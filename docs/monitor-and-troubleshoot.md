@@ -24,6 +24,8 @@ The table below summarizes the conditions LCM reports during an upgrade:
 | `HelmChartsUpgraded` | Tracks the Helm chart upgrade phase for additional chart components defined in the release manifest. |
 | `Applied`            | Summarizes the overall upgrade state. It becomes `True` only after the manifest is resolved and all upgrade phases have either succeeded or been skipped. |
 
+Whenever a condition changes to `Failed`, or fails for a different reason, LCM also emits a `Warning` event with the reason `UpgradeFailed` on the `Release` resource. The event carries the type and the message of the failed condition.
+
 ## Troubleshooting Failed Conditions
 
 This section provides troubleshooting steps for each `Release` condition when it reports as `Failed` or stays `InProgress` longer than expected.
@@ -75,6 +77,16 @@ If this phase fails or stops progressing, inspect the following resources:
 | SUC Plan Job            | `cattle-system`           | `apply-<suc-plan-name>-on-<node-name>` | Inspect the Job status and events for errors. |
 | SUC Plan Pod            | `cattle-system`           | `apply-<suc-plan-name>-on-<node-name>` | Inspect the Pod logs for errors from the [SUSE/elemental](https://github.com/SUSE/elemental) tool set. |
 | LCM Pod                 | LCM namespace             | LCM Pod name | Inspect LCM's logs for operating system upgrade reconciliation errors. |
+
+### Failed Node Upgrades
+
+Applies to the `OSUpgraded` and `KubernetesUpgraded` conditions.
+
+When the upgrade workload of a node fails, the System Upgrade Controller marks the SUC Plan as failed and does not start another workload for that node. The condition of the phase then reports `Failed`, and its message contains what the SUC Plan reports: the failed Job, the node and the reason, for example `DeadlineExceeded` when the workload did not finish in [time](./workflow.md#operating-system-upgrade-phase). No other node of the same SUC Plan is upgraded in the meantime.
+
+The node of a failed workload was cordoned before its upgrade and **remains cordoned**. The condition message lists these nodes after `Still cordoned:`. LCM does not make them schedulable again, since it cannot tell in which state the failed upgrade has left them. Nodes that have been removed from the cluster since are listed after `No longer part of the cluster:`.
+
+The Job of the failed workload and its Pods are kept for a limited time (15 minutes by default) by the System Upgrade Controller, inspect them before they are removed.
 
 ### Kubernetes Upgrade
 

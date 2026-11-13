@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -357,6 +358,68 @@ components:
 				} {
 					Expect(apimeta.IsStatusConditionTrue(updated.Status.Conditions, conditionType)).To(BeTrue(), "condition %q", conditionType)
 				}
+			})
+
+			It("should emit a warning event when an upgrade phase fails, once per failure", func() {
+				recorder := events.NewFakeRecorder(10)
+				failure := &upgrade.PhaseStatus{
+					State:   lifecyclev1alpha1.UpgradeFailed,
+					Message: "Plan elemental-os-worker failed: Job failed on Node worker1: DeadlineExceeded. Still cordoned: worker1",
+				}
+				reconciler := &ReleaseReconciler{
+					Client:           k8sClient,
+					Scheme:           k8sClient.Scheme(),
+					RetrieveManifest: defaultManifestRetrieve,
+					Pipeline:         upgrade.NewPipeline(stubPhaseHandler{phase: upgrade.PhaseOS, status: failure}),
+					Recorder:         recorder,
+				}
+
+				By("failing the OS phase")
+				result, err := reconciler.Reconcile(doneCtx, reconcile.Request{NamespacedName: doneNN})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.RequeueAfter).NotTo(BeZero(), "a failed phase is looked at again")
+
+				updated := &lifecyclev1alpha1.Release{}
+				Expect(k8sClient.Get(doneCtx, doneNN, updated)).To(Succeed())
+				osCondition := apimeta.FindStatusCondition(updated.Status.Conditions, upgrade.PhaseOS.ConditionType())
+				Expect(osCondition).NotTo(BeNil())
+				Expect(osCondition.Reason).To(Equal(lifecyclev1alpha1.UpgradeFailed))
+				Expect(osCondition.Message).To(Equal(failure.Message))
+
+				var event string
+				Expect(recorder.Events).To(Receive(&event))
+				Expect(event).To(Equal("Warning UpgradeFailed OSUpgraded: " + failure.Message))
+				Expect(recorder.Events).NotTo(Receive(), "the Applied condition does not get an event of its own")
+
+				By("seeing the same failure again")
+				_, err = reconciler.Reconcile(doneCtx, reconcile.Request{NamespacedName: doneNN})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(recorder.Events).NotTo(Receive())
+
+				By("failing for another reason")
+				failure.Message = "Plan elemental-os-worker failed: Job failed on Node worker1: BackoffLimitExceeded"
+				_, err = reconciler.Reconcile(doneCtx, reconcile.Request{NamespacedName: doneNN})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(recorder.Events).To(Receive(&event))
+				Expect(event).To(Equal("Warning UpgradeFailed OSUpgraded: " + failure.Message))
+			})
+
+			It("should not emit events while the upgrade makes progress", func() {
+				recorder := events.NewFakeRecorder(10)
+				reconciler := &ReleaseReconciler{
+					Client:           k8sClient,
+					Scheme:           k8sClient.Scheme(),
+					RetrieveManifest: defaultManifestRetrieve,
+					Pipeline: upgrade.NewPipeline(stubPhaseHandler{
+						phase:  upgrade.PhaseOS,
+						status: &upgrade.PhaseStatus{State: lifecyclev1alpha1.UpgradeInProgress, Message: "Plan is currently applying on: [worker1]"},
+					}),
+					Recorder: recorder,
+				}
+
+				_, err := reconciler.Reconcile(doneCtx, reconcile.Request{NamespacedName: doneNN})
+				Expect(err).NotTo(HaveOccurred())
+				Expect(recorder.Events).NotTo(Receive())
 			})
 
 			It("should report a failed condition without running the pipeline when the release charts contain a dependency cycle", func() {

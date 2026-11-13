@@ -22,6 +22,7 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -107,15 +108,42 @@ func (r *OSReconciler) preparePlans(ctx context.Context, config *upgrade.Config)
 		return nil, fmt.Errorf("listing cluster nodes: %w", err)
 	}
 
-	if !isControlPlaneOnlyCluster(allNodes.Items) {
-		wkPlan, err := plan.OSWorker(config.ReleaseNamespacedName.Name, osConfig.Image, osConfig.Version, config.ReleaseVersion, osConfig.DrainOpts.Worker, osConfig.WorkerConcurrency)
-		if err != nil {
-			return nil, fmt.Errorf("generating OS worker plan: %w", err)
-		}
+	wkPlan, err := plan.OSWorker(config.ReleaseNamespacedName.Name, osConfig.Image, osConfig.Version, config.ReleaseVersion, osConfig.DrainOpts.Worker, osConfig.WorkerConcurrency)
+	if err != nil {
+		return nil, fmt.Errorf("generating OS worker plan: %w", err)
+	}
+
+	// A worker plan that has been created stays part of the phase when the cluster has no worker nodes
+	// at the moment, e.g. because the only worker failed its upgrade and is being replaced. The phase
+	// must not report success while that plan has not completed.
+	include, err := workerPlanRequired(ctx, r.Client, wkPlan, allNodes.Items)
+	if err != nil {
+		return nil, err
+	}
+
+	if include {
 		planList = append(planList, wkPlan)
 	}
 
 	return planList, nil
+}
+
+// workerPlanRequired reports whether the given worker plan is part of an upgrade phase. That is the case
+// if the cluster has worker nodes, or if the plan has already been created for worker nodes that are gone since.
+func workerPlanRequired(ctx context.Context, c client.Client, wkPlan *upgradecattlev1.Plan, nodes []corev1.Node) (bool, error) {
+	if !isControlPlaneOnlyCluster(nodes) {
+		return true, nil
+	}
+
+	err := c.Get(ctx, client.ObjectKeyFromObject(wkPlan), &upgradecattlev1.Plan{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("retrieving worker plan %q: %w", wkPlan.Name, err)
+	}
+
+	return true, nil
 }
 
 // isControlPlaneOnlyCluster returns true if all nodes in the cluster are control plane nodes.

@@ -486,12 +486,19 @@ const (
 	rancherName         = "rancher"
 	rancherNamespace    = "cattle-system"
 	rancherClusterAgent = "cattle-cluster-agent"
+
+	// helmChartUnmanagedAnnotation makes the Helm Controller ignore a HelmChart resource: it neither applies
+	// nor uninstalls the chart. See AnnotationUnmanaged in github.com/k3s-io/helm-controller/pkg/controllers/chart.
+	helmChartUnmanagedAnnotation = "helmcharts.helm.cattle.io/unmanaged"
+	// sucOwnerAnnotation records on the SUC HelmChart resource that LCM handed the chart over, and to whom.
+	sucOwnerAnnotation = "lifecycle.suse.com/suc-owner"
+	sucOwnerRancher    = "rancher"
 )
 
 // handleSUCOwner determines which is the owner of the system-upgrade-controller. If Rancher is deployed, or the
 // cluster is managed by a Rancher deployed elsewhere, then SUC is dropped from the standard upgrade and
 // configuration approach and all management is left to Rancher. If Rancher is missing, then all management
-// is left to LCM.
+// is left to LCM. The SUC HelmChart resource follows the owner, see setSUCHelmChartOwner.
 func (r *ReleaseReconciler) handleSUCOwner(ctx context.Context, manifest *resolver.ResolvedManifest,
 	runtimeCharts map[string]upgrade.RuntimeHelmChartConfig) error {
 	if manifest == nil || manifest.CorePlatform == nil {
@@ -500,6 +507,10 @@ func (r *ReleaseReconciler) handleSUCOwner(ctx context.Context, manifest *resolv
 
 	rancherOwned, err := r.rancherOwnsSUC(ctx)
 	if err != nil {
+		return err
+	}
+
+	if err = r.setSUCHelmChartOwner(ctx, rancherOwned); err != nil {
 		return err
 	}
 
@@ -525,6 +536,57 @@ func (r *ReleaseReconciler) handleSUCOwner(ctx context.Context, manifest *resolv
 				c.PriorityUpgrade = true
 			}
 		}
+	}
+
+	return nil
+}
+
+// setSUCHelmChartOwner takes the SUC HelmChart resource, if there is one, away from the Helm Controller when
+// Rancher owns SUC, and gives it back when Rancher is gone.
+//
+// Dropping SUC from the charts that LCM upgrades is not enough to leave it alone: the HelmChart resource that
+// installed Elemental's SUC still names Elemental's chart version, and the Helm Controller runs "helm upgrade"
+// to that version again whenever it recreates the chart's job. It recreates the jobs of all charts when its
+// job template changes, which an RKE2 upgrade does by shipping another klipper-helm image. In the middle of a
+// Kubernetes upgrade that replaces Rancher's SUC with Elemental's.
+//
+// The resource is marked as unmanaged instead of being deleted, because deleting it makes the Helm Controller
+// uninstall the Helm release, which by now holds Rancher's SUC. Only a resource that LCM marked is given back.
+func (r *ReleaseReconciler) setSUCHelmChartOwner(ctx context.Context, rancherOwned bool) error {
+	helmChart := &helmv1.HelmChart{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: reconcilers.HelmChartNamespace, Name: sucChartName}, helmChart)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("retrieving %s helm chart: %w", sucChartName, err)
+	}
+
+	annotations := helmChart.GetAnnotations()
+	_, unmanaged := annotations[helmChartUnmanagedAnnotation]
+	handedOver := annotations[sucOwnerAnnotation] == sucOwnerRancher
+
+	patch := client.MergeFrom(helmChart.DeepCopy())
+
+	switch {
+	case rancherOwned && !unmanaged:
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[helmChartUnmanagedAnnotation] = "true"
+		annotations[sucOwnerAnnotation] = sucOwnerRancher
+		log.FromContext(ctx).Info("Rancher manages the system-upgrade-controller, releasing its HelmChart resource")
+	case !rancherOwned && handedOver:
+		delete(annotations, helmChartUnmanagedAnnotation)
+		delete(annotations, sucOwnerAnnotation)
+		log.FromContext(ctx).Info("Rancher is gone, taking the system-upgrade-controller HelmChart resource back")
+	default:
+		return nil
+	}
+
+	helmChart.SetAnnotations(annotations)
+	if err = r.Patch(ctx, helmChart, patch); err != nil {
+		return fmt.Errorf("updating %s helm chart: %w", sucChartName, err)
 	}
 
 	return nil

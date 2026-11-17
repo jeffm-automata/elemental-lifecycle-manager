@@ -1,0 +1,41 @@
+# Pod builder: what the operator needs in the namespace builder pods run in, on top of
+# operator.yaml. Replace the namespaces. With --pod-builder-kubeconfig the Role and the
+# namespace live on the other cluster and the subject is that kubeconfig's user.
+#
+# Operator arguments (see --help): --pod-builder-image=<builder image> and, to make pods the
+# default, --builder=pod. When the target fetches the image from outside the cluster:
+# --pod-builder-service-type=NodePort --pod-builder-download-host=<node address>.
+#
+# The namespace must admit the builder pod. Pod Security Standard "baseline" is enough; "privileged"
+# is never needed. "restricted" refuses the pod for the two capabilities it adds (CHOWN,
+# DAC_OVERRIDE), also when the pod runs in its own user namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: image-builders
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: image-operator-pod-builder
+  namespace: image-builders
+rules:
+  # One pod, one Service and one ConfigMap per build, named after the cache key.
+  - apiGroups: [""]
+    resources: [pods, services, configmaps]
+    verbs: [get, create, delete]
+  # The operator reads the builder's status.json through the Service.
+  - apiGroups: [""]
+    resources: [services/proxy]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: image-operator-pod-builder
+  namespace: image-builders
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: image-operator-pod-builder}
+subjects:
+  - {kind: ServiceAccount, name: image-operator, namespace: image-operator-system}

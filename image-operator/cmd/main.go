@@ -19,20 +19,29 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"flag"
 	"os"
+	"strconv"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	imagev1 "github.com/suse/elemental-lifecycle-manager/image-operator/api/v1alpha1"
+	"github.com/suse/elemental-lifecycle-manager/image-operator/internal/builder/pod"
+	"github.com/suse/elemental-lifecycle-manager/image-operator/internal/buildstatus"
 	"github.com/suse/elemental-lifecycle-manager/image-operator/internal/controller"
 	"github.com/suse/elemental-lifecycle-manager/image-operator/internal/recipe"
 	"github.com/suse/elemental-lifecycle-manager/image-operator/internal/release"
@@ -45,6 +54,9 @@ func main() {
 		leaderElect                       bool
 		opts                              controller.Options
 		builder                           harvester.BuilderConfig
+		defaultBuilder, podKubeconfig     string
+		podPull, podService               string
+		podCfg                            pod.Config
 	)
 	flag.StringVar(&namespace, "namespace", "",
 		"Only watch NodeImage objects (and read credentials Secrets) in this namespace. Empty: all namespaces.")
@@ -69,6 +81,34 @@ func main() {
 		"Git repository of the elemental3 source the recipe builds. Part of the cache key.")
 	flag.StringVar(&builder.ElementalRef, "elemental-commit", "",
 		"Commit of --elemental-repo, as a full SHA (a branch would make the cache key meaningless). Part of the cache key.")
+	flag.StringVar(&defaultBuilder, "builder", string(imagev1.BuilderVM),
+		"Where builds run when a request does not say: vm (a short-lived VM on the target) or pod "+
+			"(needs --pod-builder-image).")
+	flag.StringVar(&podCfg.Image, "pod-builder-image", "",
+		"Image of builder pods: elemental3 at --elemental-commit plus the recipe's tools "+
+			"(builder-image/Containerfile). Empty: no pod builder.")
+	flag.StringVar(&podPull, "pod-builder-image-pull-policy", string(corev1.PullIfNotPresent),
+		"Pull policy of the builder image.")
+	flag.StringVar(&podKubeconfig, "pod-builder-kubeconfig", "",
+		"File with a kubeconfig of the cluster builder pods run in. Empty: the cluster the operator runs in.")
+	flag.StringVar(&podCfg.Namespace, "pod-builder-namespace", "",
+		"Namespace of builder pods. Empty: the value of --namespace.")
+	flag.StringVar(&podCfg.CPURequest, "pod-builder-cpu-request", "1", "CPU request of the build container.")
+	flag.StringVar(&podCfg.CPULimit, "pod-builder-cpu-limit", "4", "CPU limit of the build container.")
+	flag.StringVar(&podCfg.MemoryRequest, "pod-builder-memory-request", "2Gi", "Memory request of the build container.")
+	flag.StringVar(&podCfg.MemoryLimit, "pod-builder-memory-limit", "4Gi", "Memory limit of the build container.")
+	flag.StringVar(&podCfg.WorkSize, "pod-builder-work-size", "30Gi", "Size of the work volume of a builder pod.")
+	flag.StringVar(&podCfg.WorkStorageClass, "pod-builder-work-storage-class", "",
+		"Storage class of the work volume (an ephemeral claim, deleted with the pod). "+
+			"Empty: an emptyDir on the node, limited to the size.")
+	flag.BoolVar(&podCfg.HostUsers, "pod-builder-host-users", false,
+		"Run builder pods in the node's user namespace. Default false: the pod gets its own, "+
+			"and its root is an unprivileged user of the node.")
+	flag.StringVar(&podService, "pod-builder-service-type", string(corev1.ServiceTypeClusterIP),
+		"Service in front of a builder pod: ClusterIP, or NodePort when the target fetches the image "+
+			"from outside the cluster.")
+	flag.StringVar(&podCfg.DownloadHost, "pod-builder-download-host", "",
+		"With NodePort: name or address at which the target reaches the node port.")
 	zapOpts := zap.Options{}
 	zapOpts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -99,17 +139,37 @@ func main() {
 	if namespace != "" {
 		mgrOpts.Cache = cache.Options{DefaultNamespaces: map[string]cache.Config{namespace: {}}}
 	}
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), mgrOpts)
+	restCfg := ctrl.GetConfigOrDie()
+	mgr, err := ctrl.NewManager(restCfg, mgrOpts)
 	if err != nil {
 		log.Error(err, "cannot start the manager")
 		os.Exit(1)
+	}
+	var podBuilder *controller.PodBuilder
+	if podCfg.Image != "" {
+		podCfg.ImagePullPolicy, podCfg.ServiceType = corev1.PullPolicy(podPull), corev1.ServiceType(podService)
+		podCfg.ElementalRepo, podCfg.ElementalRef = builder.ElementalRepo, builder.ElementalRef
+		if podCfg.Namespace == "" {
+			podCfg.Namespace = namespace
+		}
+		if podBuilder, err = newPodBuilder(restCfg, podKubeconfig, podCfg, scheme); err != nil {
+			log.Error(err, "cannot set the pod builder up")
+			os.Exit(2)
+		}
+	}
+	if _, err := controller.ChooseBuilder("", imagev1.Builder(defaultBuilder), podBuilder != nil); err != nil {
+		log.Error(err, "--builder")
+		os.Exit(2)
 	}
 	r := &controller.NodeImageReconciler{
 		Client: mgr.GetClient(),
 		// The core/v1 recorder on purpose: the events.k8s.io one needs more RBAC for no gain here.
 		Recorder: mgr.GetEventRecorderFor("image-operator"), //nolint:staticcheck // see above
 		Resolver: release.Registry{},
-		Backends: &controller.SecretBackends{Reader: mgr.GetAPIReader(), Builder: builder},
+		Backends: &controller.SecretBackends{
+			Reader: mgr.GetAPIReader(), Builder: builder,
+			DefaultBuilder: imagev1.Builder(defaultBuilder), Pod: podBuilder,
+		},
 		Tooling: controller.Tooling{
 			RecipeDigest: recipeDigest, ToolRepo: builder.ElementalRepo, ToolCommit: builder.ElementalRef,
 		},
@@ -122,9 +182,43 @@ func main() {
 	utilruntime.Must(mgr.AddHealthzCheck("healthz", healthz.Ping))
 	utilruntime.Must(mgr.AddReadyzCheck("readyz", healthz.Ping))
 	log.Info("starting", "namespace", namespace, "recipe", recipeDigest,
-		"elementalRepo", builder.ElementalRepo, "elementalCommit", builder.ElementalRef)
+		"elementalRepo", builder.ElementalRepo, "elementalCommit", builder.ElementalRef,
+		"builder", defaultBuilder, "podBuilder", podBuilder != nil)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		log.Error(err, "manager stopped")
 		os.Exit(1)
 	}
+}
+
+// newPodBuilder makes the clients of the cluster builder pods run in: the operator's own cluster,
+// or the one a kubeconfig file names.
+func newPodBuilder(
+	own *rest.Config, kubeconfig string, cfg pod.Config, scheme *runtime.Scheme,
+) (*controller.PodBuilder, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	restCfg := rest.CopyConfig(own)
+	if kubeconfig != "" {
+		var err error
+		if restCfg, err = clientcmd.BuildConfigFromFlags("", kubeconfig); err != nil {
+			return nil, err
+		}
+	}
+	restCfg.UserAgent = "elemental-image-operator"
+	c, err := client.New(restCfg, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, err
+	}
+	core, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return nil, err
+	}
+	return &controller.PodBuilder{
+		Client: c, Config: cfg,
+		Fetch: func(ctx context.Context, namespace, service, path string) ([]byte, error) {
+			port := strconv.Itoa(buildstatus.Port)
+			return core.CoreV1().Services(namespace).ProxyGet("http", service, port, path, nil).DoRaw(ctx)
+		},
+	}, nil
 }

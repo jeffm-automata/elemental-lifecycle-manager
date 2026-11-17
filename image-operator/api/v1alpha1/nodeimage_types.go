@@ -32,6 +32,17 @@ const (
 	CredentialsKey = "kubeconfig"
 )
 
+// Builder says where the build of an image runs.
+// +kubebuilder:validation:Enum=vm;pod
+type Builder string
+
+const (
+	// BuilderVM is a short-lived virtual machine on the target: the build is isolated by the VM.
+	BuilderVM Builder = "vm"
+	// BuilderPod is a short-lived pod on a Kubernetes cluster the operator is configured with.
+	BuilderPod Builder = "pod"
+)
+
 // Phase is a one-word summary of the conditions.
 type Phase string
 
@@ -66,6 +77,7 @@ const (
 	ReasonReleaseAccessDenied = "ReleaseAccessDenied"
 	ReasonInvalidSpec         = "InvalidSpec"
 	ReasonUnsupportedTarget   = "UnsupportedTarget"
+	ReasonUnsupportedBuilder  = "UnsupportedBuilder"
 	ReasonCredentialsInvalid  = "CredentialsInvalid"
 	ReasonBuildFailed         = "BuildFailed"
 	ReasonImageRejected       = "ImageRejected"
@@ -164,6 +176,11 @@ type NodeImageSpec struct {
 	Target TargetSpec `json:"target"`
 	// +kubebuilder:default={}
 	Config ConfigSpec `json:"config,omitempty"`
+	// Builder says where the build runs when the image is not on the target yet. Empty: the
+	// operator's default (its --builder flag). It does not change the image and is not part of
+	// the cache key.
+	// +optional
+	Builder Builder `json:"builder,omitempty"`
 	// +kubebuilder:default=Retain
 	DeletionPolicy DeletionPolicy `json:"deletionPolicy,omitempty"`
 }
@@ -187,8 +204,10 @@ type ImageStatus struct {
 
 // BuildStatus is the history of builders this request had. It is absent on a cache hit.
 type BuildStatus struct {
-	// Builder is the name of the current or last builder on the target.
+	// Builder is the name of the current or last builder.
 	Builder string `json:"builder,omitempty"`
+	// Backend is where that builder ran: vm or pod.
+	Backend Builder `json:"backend,omitempty"`
 	// Attempts counts failed builds or deliveries.
 	Attempts   int32        `json:"attempts,omitempty"`
 	StartedAt  *metav1.Time `json:"startedAt,omitempty"`

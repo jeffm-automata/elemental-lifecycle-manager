@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	imagev1 "github.com/suse/elemental-lifecycle-manager/image-operator/api/v1alpha1"
+	"github.com/suse/elemental-lifecycle-manager/image-operator/internal/builder/pod"
 	"github.com/suse/elemental-lifecycle-manager/image-operator/internal/target"
 	"github.com/suse/elemental-lifecycle-manager/image-operator/internal/target/harvester"
 )
@@ -41,9 +42,40 @@ type SecretBackends struct {
 	// Reader reads Secrets without a cache.
 	Reader  client.Reader
 	Builder harvester.BuilderConfig
+	// DefaultBuilder is used by requests that do not name a builder.
+	DefaultBuilder imagev1.Builder
+	// Pod is the pod builder; nil when the operator is not configured with one.
+	Pod *PodBuilder
 
 	mu      sync.Mutex
 	clients map[[32]byte]*targetClients
+}
+
+// PodBuilder is the cluster and the settings builder pods are created with. The cluster is fixed
+// by the operator's configuration, not by a request: a request can ask for a pod, not say where.
+type PodBuilder struct {
+	Client client.Client
+	Fetch  harvester.Fetch
+	Config pod.Config
+}
+
+// ChooseBuilder gives the builder of a request: the one it names, else the operator's default.
+// A builder the operator is not configured with is an error, never silently replaced by the other.
+func ChooseBuilder(requested, def imagev1.Builder, podConfigured bool) (imagev1.Builder, error) {
+	choice := requested
+	if choice == "" {
+		choice = def
+	}
+	switch choice {
+	case imagev1.BuilderVM:
+		return choice, nil
+	case imagev1.BuilderPod:
+		if !podConfigured {
+			return "", fmt.Errorf("builder %q is not configured on this operator (--pod-builder-image)", choice)
+		}
+		return choice, nil
+	}
+	return "", fmt.Errorf("builder %q is not known", choice)
 }
 
 type targetClients struct {
@@ -55,6 +87,10 @@ type targetClients struct {
 func (s *SecretBackends) For(ctx context.Context, ni *imagev1.NodeImage) (target.Target, target.Builder, error) {
 	if ni.Spec.Target.Type != imagev1.TargetHarvester || ni.Spec.Target.Harvester == nil {
 		return nil, nil, &BackendError{Reason: imagev1.ReasonUnsupportedTarget, Terminal: true, Err: fmt.Errorf("target type %q is not implemented", ni.Spec.Target.Type)}
+	}
+	choice, err := ChooseBuilder(ni.Spec.Builder, s.DefaultBuilder, s.Pod != nil)
+	if err != nil {
+		return nil, nil, &BackendError{Reason: imagev1.ReasonUnsupportedBuilder, Terminal: true, Err: err}
 	}
 	name := ni.Spec.Target.CredentialsSecretRef.Name
 	secret := &corev1.Secret{}
@@ -80,6 +116,9 @@ func (s *SecretBackends) For(ctx context.Context, ni *imagev1.NodeImage) (target
 		Fetch: func(ctx context.Context, namespace, service, path string) ([]byte, error) {
 			return tc.core.CoreV1().Services(namespace).ProxyGet("http", service, "8080", path, nil).DoRaw(ctx)
 		},
+	}
+	if choice == imagev1.BuilderPod {
+		return h, &pod.Pod{Client: s.Pod.Client, Fetch: s.Pod.Fetch, Prefix: ht.NamePrefix, Config: s.Pod.Config}, nil
 	}
 	return h, h, nil
 }

@@ -283,6 +283,7 @@ func buildStatus(ni *imagev1.NodeImage, s seen) *imagev1.BuildStatus {
 		ni.Status.Build = &imagev1.BuildStatus{StartedAt: &s.now}
 	}
 	ni.Status.Build.Builder = s.build.Name
+	ni.Status.Build.Backend = imagev1.Builder(s.build.Backend)
 	return ni.Status.Build
 }
 

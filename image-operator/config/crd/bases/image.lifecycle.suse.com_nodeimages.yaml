@@ -66,6 +66,15 @@ spec:
                 - x86_64
                 - aarch64
                 type: string
+              builder:
+                description: |-
+                  Builder says where the build runs when the image is not on the target yet. Empty: the
+                  operator's default (its --builder flag). It does not change the image and is not part of
+                  the cache key.
+                enum:
+                - vm
+                - pod
+                type: string
               config:
                 default: {}
                 description: |-
@@ -193,9 +202,14 @@ spec:
                     description: Attempts counts failed builds or deliveries.
                     format: int32
                     type: integer
+                  backend:
+                    description: 'Backend is where that builder ran: vm or pod.'
+                    enum:
+                    - vm
+                    - pod
+                    type: string
                   builder:
-                    description: Builder is the name of the current or last builder
-                      on the target.
+                    description: Builder is the name of the current or last builder.
                     type: string
                   finishedAt:
                     format: date-time

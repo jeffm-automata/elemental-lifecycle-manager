@@ -22,7 +22,6 @@ package harvester
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -35,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/suse/elemental-lifecycle-manager/image-operator/internal/buildstatus"
 	"github.com/suse/elemental-lifecycle-manager/image-operator/internal/target"
 )
 
@@ -53,7 +53,7 @@ const (
 	annImageID    = "harvesterhci.io/imageId"
 	labelVMName   = "harvesterhci.io/vmName"
 
-	httpPort = 8080
+	httpPort = buildstatus.Port
 	keyName  = "name"
 	virtio   = "virtio"
 )
@@ -263,23 +263,6 @@ func (h *Harvester) DeleteImage(ctx context.Context, req target.Request) error {
 	return h.deleteIgnoreMissing(ctx, u)
 }
 
-// builderStatus is status.json as run-build.sh writes it.
-type builderStatus struct {
-	Key               string `json:"key"`
-	State             string `json:"state"`
-	Step              string `json:"step"`
-	ExitCode          int    `json:"exitCode"`
-	Error             string `json:"error"`
-	LogTail           string `json:"logTail"`
-	SELinux           string `json:"selinux"`
-	File              string `json:"file"`
-	SHA256            string `json:"sha256"`
-	SHA512            string `json:"sha512"`
-	SizeBytes         int64  `json:"sizeBytes"`
-	ManifestDigest    string `json:"manifestDigest"`
-	KubernetesVersion string `json:"kubernetesVersion"`
-}
-
 // Status implements target.Builder.
 func (h *Harvester) Status(ctx context.Context, req target.Request) (target.Build, error) {
 	name := h.BuilderName(req.Key)
@@ -304,42 +287,15 @@ func (h *Harvester) Status(ctx context.Context, req target.Request) (target.Buil
 		created = secret.CreationTimestamp.Time
 	}
 	b := target.Build{State: target.BuildRunning, Name: name, Created: created}
-	raw, err := h.Fetch(ctx, h.Namespace, name, "status.json")
+	raw, err := h.Fetch(ctx, h.Namespace, name, buildstatus.File)
 	if err != nil {
 		printable, _, _ := unstructured.NestedString(vm.Object, "status", "printableStatus")
 		b.Step = "builder VM starting (" + printable + ")"
 		return b, nil
 	}
-	var st builderStatus
-	if err := json.Unmarshal(raw, &st); err != nil {
-		b.Step = "builder status unreadable"
-		return b, nil
-	}
-	if st.Key != req.Key {
-		b.State, b.Terminal = target.BuildFailed, true
-		b.Message = fmt.Sprintf("builder %s/%s belongs to another cache key", h.Namespace, name)
-		return b, nil
-	}
-	switch st.State {
-	case "done":
-		if st.File == "" || st.SHA512 == "" {
-			b.State, b.Message = target.BuildFailed, "builder reported success without a file or checksum"
-			return b, nil
-		}
-		b.State = target.BuildSucceeded
-		b.Artifact = &target.Artifact{
-			URL:  fmt.Sprintf("http://%s.%s.svc.cluster.local:%d/%s", name, h.Namespace, httpPort, st.File),
-			File: st.File, SHA256: st.SHA256, SHA512: st.SHA512, SizeBytes: st.SizeBytes, KubernetesVersion: st.KubernetesVersion,
-		}
-	case "failed":
-		b.State = target.BuildFailed
-		// Exit 2: the recipe refused its arguments. Exit 3: the inspection rejected the image.
-		b.Terminal = st.ExitCode == 2 || st.ExitCode == 3
-		b.Message = strings.TrimSpace(fmt.Sprintf("%s (step %s, exit status %d, builder SELinux: %s)\n%s",
-			st.Error, st.Step, st.ExitCode, st.SELinux, st.LogTail))
-	default:
-		b.Step = st.Step
-	}
+	buildstatus.Apply(&b, raw, req, h.Namespace+"/"+name, func(file string) string {
+		return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d/%s", name, h.Namespace, httpPort, file)
+	})
 	return b, nil
 }
 

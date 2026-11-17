@@ -27,15 +27,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/yaml"
 
+	"github.com/suse/elemental-lifecycle-manager/image-operator/internal/buildstatus"
 	"github.com/suse/elemental-lifecycle-manager/image-operator/internal/recipe"
 	"github.com/suse/elemental-lifecycle-manager/image-operator/internal/target"
 )
 
 //go:embed builder/run-build.sh
 var runBuild []byte
-
-//go:embed builder/status.py
-var statusPy []byte
 
 // Values that reach a shell in the builder are checked here as well as by the CRD schema.
 var (
@@ -111,7 +109,7 @@ func (h *Harvester) userData(req target.Request) ([]byte, error) {
 		// In /usr/local/bin on purpose: on an SELinux system a unit that starts a program from there runs
 		// unconfined, while one started from /etc stays in the init domain and may not execute the recipe.
 		b64File("/usr/local/bin/e3-run-build", "0755", runBuild),
-		b64File("/etc/e3-build/status.py", "0644", statusPy),
+		b64File("/etc/e3-build/status.py", "0644", buildstatus.Script()),
 		{Path: "/etc/systemd/system/e3-build.service", Permissions: "0644", Content: buildUnit},
 		{Path: "/etc/systemd/system/e3-build-http.service", Permissions: "0644", Content: httpUnit},
 	}

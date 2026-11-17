@@ -117,6 +117,11 @@ var unsafeName = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 // FileBase is the base name of the image file: elemental-node-<release tag>-harvester.<arch>.
 func FileBase(req target.Request) string {
+	return "elemental-node-" + releaseTag(req) + "-harvester." + req.Arch
+}
+
+// releaseTag is the tag of the manifest reference, or the start of its digest, safe for names.
+func releaseTag(req target.Request) string {
 	tag := req.ManifestRef
 	if i := strings.LastIndexAny(tag, ":@"); i >= 0 {
 		tag = tag[i+1:]
@@ -124,7 +129,22 @@ func FileBase(req target.Request) string {
 	if strings.Contains(req.ManifestRef, "@") && len(tag) > 12 {
 		tag = tag[:12]
 	}
-	return "elemental-node-" + unsafeName.ReplaceAllString(tag, "_") + "-harvester." + req.Arch
+	return unsafeName.ReplaceAllString(tag, "_")
+}
+
+// maxDisplayName: Harvester copies an image's display name into a label, and a label value holds
+// 63 bytes. Longer names are refused when the image is created.
+const maxDisplayName = 63
+
+// DisplayName is the name Harvester shows for the image: <prefix>e3-<release tag>-harvester-<arch>-<key>.qcow2,
+// unique per key, with the release tag cut short if the whole would not fit.
+func (h *Harvester) DisplayName(req target.Request) string {
+	head := h.Prefix + "e3-" + releaseTag(req)
+	tail := "-harvester-" + req.Arch + "-" + short(req.Key)[:min(8, len(req.Key))] + ".qcow2"
+	if len(head)+len(tail) > maxDisplayName {
+		head = head[:max(0, maxDisplayName-len(tail))]
+	}
+	return head + tail
 }
 
 func (h *Harvester) labels(key, role string) map[string]any {
@@ -224,7 +244,7 @@ func (h *Harvester) Deliver(ctx context.Context, req target.Request, a target.Ar
 		annSHA256: a.SHA256, annKubernetes: a.KubernetesVersion,
 	})
 	u.Object["spec"] = map[string]any{
-		"displayName":            h.Prefix + FileBase(req) + "-" + req.Key[:8] + ".qcow2",
+		"displayName":            h.DisplayName(req),
 		"description":            "Elemental node image of " + req.ManifestRef + ", built by the image build operator",
 		"sourceType":             "download",
 		"backend":                "backingimage",

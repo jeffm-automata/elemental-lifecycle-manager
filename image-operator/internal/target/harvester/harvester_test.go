@@ -317,3 +317,24 @@ func TestFileBase(t *testing.T) {
 		t.Error(got)
 	}
 }
+
+func TestDisplayNameFitsALabel(t *testing.T) {
+	h, _ := newTarget(t)
+	h.Prefix = "e3p-t1-5-"
+	if got := h.DisplayName(req); got != "e3p-t1-5-e3-1.37.2-20.3-harvester-x86_64-abababab.qcow2" {
+		t.Error(got)
+	}
+	long := req
+	long.ManifestRef = "registry.example/rel/manifest:" + strings.Repeat("9.", 40) + "0"
+	long.Arch = "aarch64"
+	h.Prefix = "a-long-prefix-of-20-"
+	got := h.DisplayName(long)
+	if len(got) > 63 || !strings.HasSuffix(got, "-harvester-aarch64-abababab.qcow2") || !strings.HasPrefix(got, h.Prefix) {
+		t.Errorf("%d bytes: %s", len(got), got)
+	}
+	other := long
+	other.Key = strings.Repeat("cd", 32)
+	if h.DisplayName(other) == got {
+		t.Error("two keys share a display name")
+	}
+}

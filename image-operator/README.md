@@ -50,10 +50,14 @@ interfaces in `internal/target`.
 
 ```sh
 make test        # unit tests: cache key, state machine, controller against a fake target, Harvester objects
+make test-crd    # the CRD schema (defaults, patterns, immutable spec) against a real API server (envtest)
 make build       # bin/image-operator
 make container   # container image (podman)
 make generate    # after changing api/
 ```
+
+`hack/apiserver` starts a bare API server with only this CRD in it, to run the operator against a management
+API that has nothing else installed.
 
 Not implemented (see the design note of the parity project, `design/T1.5-image-build-operator.md`): the prebuilt
 image path, pull secrets for private releases, time-to-live collection of unused images, targets other than

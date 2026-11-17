@@ -23,6 +23,13 @@ test: ## Unit tests (no cluster needed).
 	go vet ./...
 	go test ./...
 
+ENVTEST ?= go run sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.25
+ENVTEST_K8S_VERSION ?= 1.37
+
+.PHONY: test-crd
+test-crd: ## The CRD schema against a real API server (envtest binaries are downloaded on first use).
+	KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" go test -count=1 ./test/crd/
+
 .PHONY: container
 container: ## Operator container image.
 	$(CONTAINER_TOOL) build -t $(IMG) .

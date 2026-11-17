@@ -363,8 +363,9 @@ func (r *NodeImageReconciler) report(ni *imagev1.NodeImage, s seen) ctrl.Result 
 	switch s.d.Phase {
 	case imagev1.PhaseReady:
 		if ni.Status.ReadyAt == nil {
-			hit := s.d.CacheHit
-			ni.Status.ReadyAt, ni.Status.CacheHit = &s.now, &hit
+			// The time the request is reported Ready (after the builder is gone), not the time of the look.
+			hit, readyAt := s.d.CacheHit, metav1.NewTime(r.now())
+			ni.Status.ReadyAt, ni.Status.CacheHit = &readyAt, &hit
 			if hit {
 				r.event(ni, corev1.EventTypeNormal, imagev1.ReasonCacheHit,
 					"image "+where+" already exists for cache key "+s.req.Key+"; nothing built")
@@ -380,7 +381,9 @@ func (r *NodeImageReconciler) report(ni *imagev1.NodeImage, s seen) ctrl.Result 
 		if *ni.Status.CacheHit {
 			builtReason, readyReason = imagev1.ReasonCacheHit, imagev1.ReasonCacheHit
 		}
-		setCond(ni, imagev1.ConditionBuilt, metav1.ConditionTrue, builtReason, "")
+		if !meta.IsStatusConditionTrue(ni.Status.Conditions, imagev1.ConditionBuilt) {
+			setCond(ni, imagev1.ConditionBuilt, metav1.ConditionTrue, builtReason, "")
+		}
 		setCond(ni, imagev1.ConditionDelivered, metav1.ConditionTrue, imagev1.ReasonDelivered, where)
 		setCond(ni, imagev1.ConditionReady, metav1.ConditionTrue, readyReason, "image "+where+" is usable")
 		return ctrl.Result{}

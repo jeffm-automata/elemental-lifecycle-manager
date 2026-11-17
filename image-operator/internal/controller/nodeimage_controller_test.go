@@ -243,6 +243,9 @@ func TestMissThenHit(t *testing.T) {
 	if ni, _, _ = h.reconcile("a"); *ni.Status.CacheHit {
 		t.Fatal("a later reconcile turned the miss into a hit")
 	}
+	if c := meta.FindStatusCondition(ni.Status.Conditions, imagev1.ConditionBuilt); !strings.Contains(c.Message, "x.qcow2") {
+		t.Fatalf("the Built condition lost what was built: %+v", c)
+	}
 
 	// A second, identical request under another name: ready at once, no builder.
 	if err := h.c.Create(context.Background(), nodeImage("b")); err != nil {

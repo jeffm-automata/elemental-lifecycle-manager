@@ -1,0 +1,83 @@
+# Image build operator, watching one namespace. Apply config/crd/bases first.
+# Replace the namespace (image-operator-system), the image and the two --elemental-* arguments.
+# Everything is namespaced: the only cluster-scoped object of the operator is its CRD.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: image-operator
+  namespace: image-operator-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: image-operator
+  namespace: image-operator-system
+rules:
+  - apiGroups: [image.lifecycle.suse.com]
+    resources: [nodeimages]
+    verbs: [get, list, watch, update, patch]
+  - apiGroups: [image.lifecycle.suse.com]
+    resources: [nodeimages/status]
+    verbs: [get, update, patch]
+  - apiGroups: [image.lifecycle.suse.com]
+    resources: [nodeimages/finalizers]
+    verbs: [update]
+  # Target credentials named by NodeImage objects. Read one at a time, never listed or watched.
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: image-operator
+  namespace: image-operator-system
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: image-operator}
+subjects:
+  - {kind: ServiceAccount, name: image-operator, namespace: image-operator-system}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: image-operator
+  namespace: image-operator-system
+  labels: {app.kubernetes.io/name: image-operator}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: image-operator}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: image-operator}
+    spec:
+      serviceAccountName: image-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: manager
+          image: image-operator:latest
+          args:
+            - --namespace=$(POD_NAMESPACE)
+            - --elemental-repo=https://github.com/SUSE/elemental.git
+            - --elemental-commit=0000000000000000000000000000000000000000
+          env:
+            - name: POD_NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8081}
+            initialDelaySeconds: 10
+          readinessProbe:
+            httpGet: {path: /readyz, port: 8081}
+          resources:
+            requests: {cpu: 20m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}

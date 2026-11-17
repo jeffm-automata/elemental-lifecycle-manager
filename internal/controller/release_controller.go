@@ -478,6 +478,7 @@ func (r *ReleaseReconciler) parseUpgradeConfig(ctx context.Context, manifest *re
 			DrainOpts:         opts,
 			HelmCharts:        runtimeCharts,
 			WorkerConcurrency: int64(ptr.Deref(release.Spec.WorkerConcurrency, 0)),
+			UpgradeStrategy:   release.Spec.UpgradeStrategy,
 		})
 }
 

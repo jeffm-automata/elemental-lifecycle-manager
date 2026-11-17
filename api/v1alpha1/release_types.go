@@ -90,6 +90,17 @@ func SanitizeVersion(version string) string {
 	return strings.Trim(norm, "-")
 }
 
+// UpgradeStrategy specifies how the nodes of a cluster are brought to a release.
+type UpgradeStrategy string
+
+const (
+	// UpgradeStrategyInPlace upgrades the operating system and Kubernetes of every node in place.
+	UpgradeStrategyInPlace UpgradeStrategy = "InPlace"
+	// UpgradeStrategyReplace leaves the nodes to an external actor that replaces them with
+	// nodes that already run the target release.
+	UpgradeStrategyReplace UpgradeStrategy = "Replace"
+)
+
 // ReleaseSpec defines the desired state of Release
 // +kubebuilder:pruning:PreserveUnknownFields
 type ReleaseSpec struct {
@@ -107,6 +118,15 @@ type ReleaseSpec struct {
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	WorkerConcurrency *int32 `json:"workerConcurrency,omitempty"`
+	// UpgradeStrategy specifies how the nodes of the cluster reach the operating system and
+	// Kubernetes versions of the target release.
+	// InPlace, the default when empty, upgrades every node in place.
+	// Replace means that the nodes are replaced by an external actor (e.g. a Cluster API rollout
+	// to a node image of the target release). No node is upgraded in place, and the release is
+	// applied once all nodes run the target Kubernetes version.
+	// +optional
+	// +kubebuilder:validation:Enum=InPlace;Replace
+	UpgradeStrategy UpgradeStrategy `json:"upgradeStrategy,omitempty"`
 	// ComponentConfig allows for additional configuration for components
 	// defined in the target release.
 	// +optional

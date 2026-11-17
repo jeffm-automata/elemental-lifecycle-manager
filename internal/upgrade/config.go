@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/name"
+	lifecyclev1alpha1 "github.com/suse/elemental-lifecycle-manager/api/v1alpha1"
 	"github.com/suse/elemental/v3/pkg/manifest/api"
 	"github.com/suse/elemental/v3/pkg/manifest/resolver"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -45,6 +46,9 @@ type Config struct {
 	ReleaseNamespacedName types.NamespacedName
 	// ReleaseVersion is the target release version.
 	ReleaseVersion string
+	// UpgradeStrategy specifies how the nodes reach the target operating system and Kubernetes versions.
+	// An empty value is the same as lifecyclev1alpha1.UpgradeStrategyInPlace.
+	UpgradeStrategy lifecyclev1alpha1.UpgradeStrategy
 	// OS contains all upgrade configurations related to the target operating system.
 	OS *OSConfig
 	// Kubernetes contains all upgrade configurations related to the target Kubernetes distribution.
@@ -106,6 +110,8 @@ type RuntimeConfig struct {
 	// WorkerConcurrency specifies how many worker nodes can be upgraded at the same time.
 	// Values lower than 1 result in the default of one node at a time.
 	WorkerConcurrency int64
+	// UpgradeStrategy specifies how the nodes reach the target release. Empty means in place.
+	UpgradeStrategy lifecyclev1alpha1.UpgradeStrategy
 }
 
 // ConfigError specifies an error caused by invalid upgrade configuration coming either from runtime
@@ -135,6 +141,11 @@ type RuntimeSecretValueSource struct {
 	Keys []string
 }
 
+// ReplaceNodes reports whether the nodes are replaced by an external actor instead of being upgraded in place.
+func (c *Config) ReplaceNodes() bool {
+	return c.UpgradeStrategy == lifecyclev1alpha1.UpgradeStrategyReplace
+}
+
 func NewConfig(manifest *resolver.ResolvedManifest, releaseVersion string, releaseNN types.NamespacedName, runtimeConfig *RuntimeConfig) (*Config, error) {
 	if manifest == nil {
 		return nil, fmt.Errorf("manifest is nil")
@@ -155,6 +166,7 @@ func NewConfig(manifest *resolver.ResolvedManifest, releaseVersion string, relea
 	config := &Config{
 		ReleaseNamespacedName: releaseNN,
 		ReleaseVersion:        releaseVersion,
+		UpgradeStrategy:       runtimeConfig.UpgradeStrategy,
 		OS: &OSConfig{
 			Image:             core.Components.OperatingSystem.Image.Base,
 			Version:           ref.TagStr(),

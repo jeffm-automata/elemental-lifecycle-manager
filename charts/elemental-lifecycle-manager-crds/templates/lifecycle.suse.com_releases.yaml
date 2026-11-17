@@ -107,6 +107,18 @@ spec:
                 description: Registry specifies an OCI registry to fetch release metadata
                   from.
                 type: string
+              upgradeStrategy:
+                description: |-
+                  UpgradeStrategy specifies how the nodes of the cluster reach the operating system and
+                  Kubernetes versions of the target release.
+                  InPlace, the default when empty, upgrades every node in place.
+                  Replace means that the nodes are replaced by an external actor (e.g. a Cluster API rollout
+                  to a node image of the target release). No node is upgraded in place, and the release is
+                  applied once all nodes run the target Kubernetes version.
+                enum:
+                - InPlace
+                - Replace
+                type: string
               version:
                 description: Version specifies the target version of the target release.
                 type: string

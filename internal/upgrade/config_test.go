@@ -23,6 +23,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	lifecyclev1alpha1 "github.com/suse/elemental-lifecycle-manager/api/v1alpha1"
 	"github.com/suse/elemental/v3/pkg/manifest/api"
 	"github.com/suse/elemental/v3/pkg/manifest/api/core"
 	"github.com/suse/elemental/v3/pkg/manifest/api/solution"
@@ -179,6 +180,27 @@ var _ = Describe("Configuration creation", func() {
 		Expect(err).ToNot(HaveOccurred())
 		Expect(config.OS.WorkerConcurrency).To(Equal(int64(3)))
 		Expect(config.Kubernetes.WorkerConcurrency).To(Equal(int64(3)))
+	})
+
+	It("Should upgrade in place by default and carry the requested upgrade strategy", func() {
+		manifest := &resolver.ResolvedManifest{CorePlatform: corePlatformManifest}
+		releaseNN := types.NamespacedName{Name: releaseName, Namespace: releaseNamespace}
+
+		config, err := NewConfig(manifest, releaseVersion, releaseNN, &RuntimeConfig{DrainOpts: &DrainOpts{}})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(config.UpgradeStrategy).To(BeEmpty())
+		Expect(config.ReplaceNodes()).To(BeFalse())
+
+		config, err = NewConfig(manifest, releaseVersion, releaseNN,
+			&RuntimeConfig{DrainOpts: &DrainOpts{}, UpgradeStrategy: lifecyclev1alpha1.UpgradeStrategyInPlace})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(config.ReplaceNodes()).To(BeFalse())
+
+		config, err = NewConfig(manifest, releaseVersion, releaseNN,
+			&RuntimeConfig{DrainOpts: &DrainOpts{}, UpgradeStrategy: lifecyclev1alpha1.UpgradeStrategyReplace})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(config.UpgradeStrategy).To(Equal(lifecyclev1alpha1.UpgradeStrategyReplace))
+		Expect(config.ReplaceNodes()).To(BeTrue())
 	})
 
 	It("Should upgrade one worker at a time for worker concurrency values lower than one", func() {

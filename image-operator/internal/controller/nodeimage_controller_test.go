@@ -179,9 +179,17 @@ func newHarness(t *testing.T, objs ...client.Object) *harness {
 	}}
 }
 
+// reconcile runs one reconcile and returns the object as stored afterwards. A new object first gets
+// its finalizer in a reconcile of its own (as the update event would cause); that one is run here too.
 func (h *harness) reconcile(name string) (*imagev1.NodeImage, ctrl.Result, error) {
 	h.t.Helper()
 	key := types.NamespacedName{Namespace: "ns", Name: name}
+	fresh := &imagev1.NodeImage{}
+	if err := h.c.Get(context.Background(), key, fresh); err == nil && len(fresh.Finalizers) == 0 {
+		if _, err := h.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key}); err != nil {
+			h.t.Fatalf("first reconcile of %s: %v", name, err)
+		}
+	}
 	res, err := h.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
 	ni := &imagev1.NodeImage{}
 	if gerr := h.c.Get(context.Background(), key, ni); gerr != nil {
@@ -478,4 +486,25 @@ func TestTargetRefusal(t *testing.T) {
 	h.w.deliverErr = nil
 	ni, _, _ = h.reconcile("a")
 	h.wantPhase(ni, imagev1.PhaseDelivering)
+}
+
+// The first reconcile of a new object only adds the finalizer; it must not ask the registry or the
+// target, or everything would be done twice (seen in the lab as a conflict and a second registry request).
+func TestFirstReconcileOnlyAddsTheFinalizer(t *testing.T) {
+	h := newHarness(t, nodeImage("a"))
+	key := types.NamespacedName{Namespace: "ns", Name: "a"}
+	res, err := h.r.Reconcile(context.Background(), ctrl.Request{NamespacedName: key})
+	if err != nil || res.RequeueAfter != 0 {
+		t.Fatalf("%v %s", err, res.RequeueAfter)
+	}
+	ni := &imagev1.NodeImage{}
+	if err := h.c.Get(context.Background(), key, ni); err != nil {
+		t.Fatal(err)
+	}
+	if len(ni.Finalizers) != 1 || ni.Status.Phase != "" || h.s.calls != 0 || h.w.created != 0 {
+		t.Fatalf("finalizers %v, phase %q, registry calls %d, builders %d", ni.Finalizers, ni.Status.Phase, h.s.calls, h.w.created)
+	}
+	if _, _, err := h.reconcile("a"); err != nil || h.s.calls != 1 {
+		t.Fatalf("second reconcile: %v, registry calls %d", err, h.s.calls)
+	}
 }

@@ -136,9 +136,10 @@ func (r *NodeImageReconciler) Reconcile(ctx context.Context, rq ctrl.Request) (c
 		return r.finalize(ctx, ni)
 	}
 	if controllerutil.AddFinalizer(ni, imagev1.Finalizer) {
-		if err := r.Update(ctx, ni); err != nil {
-			return ctrl.Result{}, err
-		}
+		// Stop here: the update comes back as an event, and that reconcile works on the stored object.
+		// Going on with this copy made the status update conflict and the whole step (registry
+		// request included) run twice.
+		return ctrl.Result{}, r.Update(ctx, ni)
 	}
 	// Failed is terminal for a generation: nothing is retried behind the user's back.
 	if ni.Status.Phase == imagev1.PhaseFailed && ni.Status.ObservedGeneration == ni.Generation {

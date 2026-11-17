@@ -20,13 +20,16 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -48,6 +51,8 @@ type world struct {
 	failWith string
 	terminal bool
 	err      error
+	// deliverErr is returned by Deliver.
+	deliverErr error
 }
 
 func newWorld() *world {
@@ -66,6 +71,9 @@ func (w *world) FindImage(_ context.Context, req target.Request) (target.Image, 
 }
 
 func (w *world) Deliver(_ context.Context, req target.Request, a target.Artifact) error {
+	if w.deliverErr != nil {
+		return w.deliverErr
+	}
 	if _, ok := w.images[req.Key]; !ok {
 		w.images[req.Key] = &target.Image{State: target.ImageImporting, Name: "img-" + req.Key[:12], Namespace: "tgt", SHA256: a.SHA256, KubernetesVersion: a.KubernetesVersion}
 	}
@@ -434,4 +442,37 @@ func TestDeletion(t *testing.T) {
 	if len(h.w.images) != 1 || len(h.w.builders) != 0 || h.w.deleted != 1 {
 		t.Fatalf("after deleting c: images %d, builders %d, deleted %d", len(h.w.images), len(h.w.builders), h.w.deleted)
 	}
+}
+
+// An object the target refuses as invalid will be refused again: the request must end, not retry
+// for ever, and must not leave its builder running. Other target errors are retried.
+func TestTargetRefusal(t *testing.T) {
+	h := newHarness(t, nodeImage("a"))
+	h.mustReconcile("a")
+	h.w.finishBuilds()
+	h.w.deliverErr = fmt.Errorf("create image: %w",
+		apierrors.NewInvalid(schema.GroupKind{Group: "example", Kind: "Image"}, "x", nil))
+	ni, res, err := h.reconcile("a")
+	if err != nil || res.RequeueAfter != 0 {
+		t.Fatalf("an invalid object must not be retried: %v %s", err, res.RequeueAfter)
+	}
+	h.wantPhase(ni, imagev1.PhaseFailed)
+	if c := meta.FindStatusCondition(ni.Status.Conditions, imagev1.ConditionReady); c.Reason != imagev1.ReasonTargetRejected {
+		t.Fatalf("reason %s", c.Reason)
+	}
+	if len(h.w.builders) != 0 {
+		t.Fatal("the builder was left running")
+	}
+
+	h = newHarness(t, nodeImage("a"))
+	h.mustReconcile("a")
+	h.w.finishBuilds()
+	h.w.deliverErr = apierrors.NewServiceUnavailable("try later")
+	ni, _, err = h.reconcile("a")
+	if err == nil || ni.Status.Phase == imagev1.PhaseFailed || len(h.w.builders) != 1 {
+		t.Fatalf("an unavailable target must be retried with the builder kept: %v, phase %s", err, ni.Status.Phase)
+	}
+	h.w.deliverErr = nil
+	ni, _, _ = h.reconcile("a")
+	h.wantPhase(ni, imagev1.PhaseDelivering)
 }

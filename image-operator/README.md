@@ -32,7 +32,7 @@ spec:
 | Lookup | Harvester image `<prefix>img-<key[:12]>` whose annotation holds the whole key. Imported: `Ready`, `cacheHit: true`, nothing built |
 | Build | A short-lived VM in the target namespace (stock cloud image; cloud-init installs podman and runs the recipe) behind a ClusterIP Service. The operator reads `status.json` from it through the Service proxy of the target API. The VM holds no credential |
 | Deliver | A `VirtualMachineImage` with the Service URL and the SHA-512; Harvester downloads and verifies. Then the VM, its disk, Secret and Service are deleted |
-| Failure | A failed or overdue build is retried with a new VM up to `--max-attempts` (2), then `Failed` with the end of the build log. Nothing retries a `Failed` request; delete and recreate it |
+| Failure | A failed or overdue build is retried with a new VM up to `--max-attempts` (2), then `Failed` with the end of the build log. An object the target refuses as invalid ends the request at once (`TargetRejected`). Nothing retries a `Failed` request; delete and recreate it |
 
 The state machine is one pure function, `internal/controller/ladder.go`. Targets and builders are the two
 interfaces in `internal/target`.

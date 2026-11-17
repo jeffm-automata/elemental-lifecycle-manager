@@ -69,6 +69,7 @@ const (
 	ReasonCredentialsInvalid  = "CredentialsInvalid"
 	ReasonBuildFailed         = "BuildFailed"
 	ReasonImageRejected       = "ImageRejected"
+	ReasonTargetRejected      = "TargetRejected"
 )
 
 // DeletionPolicy says what happens to the image on the target when the last request for it is deleted.

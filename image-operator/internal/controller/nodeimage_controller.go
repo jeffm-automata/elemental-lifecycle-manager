@@ -26,6 +26,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
@@ -196,6 +197,14 @@ func (r *NodeImageReconciler) step(ctx context.Context, ni *imagev1.NodeImage) (
 		return ctrl.Result{}, err
 	}
 	if err := r.act(ctx, ni, s); err != nil {
+		if apierrors.IsInvalid(err) || apierrors.IsBadRequest(err) {
+			// The target refuses the object itself; asking again can not help. Free the builder and stop.
+			if cerr := s.bld.Cleanup(ctx, s.req); cerr != nil {
+				return ctrl.Result{}, cerr
+			}
+			r.fail(ni, imagev1.ReasonTargetRejected, "the target refused an object of this request: "+err.Error())
+			return ctrl.Result{}, nil
+		}
 		setCond(ni, imagev1.ConditionReady, metav1.ConditionFalse, imagev1.ReasonTargetUnavailable, err.Error())
 		return ctrl.Result{}, err
 	}

@@ -1,0 +1,27 @@
+[
+  {
+    "id": "tooling-not-released",
+    "summary": "elemental3 is built from jeffm-automata/elemental branch agent/T1.4-lab (SUSE/elemental main 6d6fc5f plus the three branches below), not the elemental image named by the release manifest (registry.suse.com/beta/uc/elemental:3.1.0-7.25)",
+    "removedBy": "the three changes below reaching a released elemental3"
+  },
+  {
+    "id": "cloud-init",
+    "summary": "cloudInit.enabled in install.yaml and the elemental3ctl copy under /usr/local/libexec/elemental come from the cloud-init prototype agent/T2.6-cloud-init-yip (88b1d2c). The copy lives in a read-write volume and is not updated by OS upgrades",
+    "removedBy": "T2.6: cloud-init support shipped in the OS package"
+  },
+  {
+    "id": "external-bootstrap",
+    "summary": "externalBootstrap in kubernetes/cluster.yaml (no cluster token, no default role, /opt/install.sh) comes from agent/T1.4-external-bootstrap (4 commits on SUSE/elemental main 6d6fc5f)",
+    "removedBy": "that branch, or an equivalent, merged in SUSE/elemental"
+  },
+  {
+    "id": "release-marker",
+    "summary": "/etc/elemental/release.yaml (which release the image was built from) comes from agent/T3.3-record-installed-release (19a5201)",
+    "removedBy": "that branch merged in SUSE/elemental"
+  },
+  {
+    "id": "ignition-platform-metal",
+    "summary": "ignition.platform.id=metal: the image reads cloud-config user-data only; an Ignition document on the NoCloud/ConfigDrive volume is ignored. One image per user-data format",
+    "removedBy": "an Ignition package that skips user-data it does not recognise (design/T2.6-cloud-init-yip.md section 5)"
+  }
+]

@@ -1,0 +1,11 @@
+# Built into the image (on Elemental >= 3.1 butane.yaml goes into the initrd with the generated
+# configuration, in split mode too). Nothing per node or per cluster belongs here.
+variant: fcos
+version: 1.6.0
+systemd:
+  units:
+    # The SLES 16.1 OS image ships sshd disabled. CAPHV always injects an SSH key and the legacy
+    # node images accept it, so the generic image enables the service. Host keys do not exist in
+    # the image; sshd creates them on each node's first start.
+    - name: sshd.service
+      enabled: true

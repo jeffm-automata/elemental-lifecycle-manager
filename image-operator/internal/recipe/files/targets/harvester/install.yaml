@@ -1,0 +1,13 @@
+schema: v0
+bootloader: grub
+# ignition.platform.id=metal: Ignition applies only the configuration built into the image and
+# does not read the NoCloud/ConfigDrive volume. That volume carries a #cloud-config document
+# (what CAPHV attaches), which upstream Ignition would reject and fail the boot on.
+kernelCmdLine: "@CONSOLE@ ignition.platform.id=metal"
+raw:
+  # Virtual size of the image. The VM disk must be at least this big; a bigger disk is used fully.
+  diskSize: @DISK_SIZE@
+# LAB DEVIATION cloud-init: needs the elemental3 cloud-init prototype (T2.6). Released tooling
+# rejects this key.
+cloudInit:
+  enabled: true

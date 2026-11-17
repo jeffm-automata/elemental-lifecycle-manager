@@ -1,0 +1,3 @@
+# The image is shared by every cluster on this release: no nodes, no network, no token, no role.
+# LAB DEVIATION external-bootstrap: needs jeffm-automata/elemental agent/T1.4-external-bootstrap.
+externalBootstrap: true

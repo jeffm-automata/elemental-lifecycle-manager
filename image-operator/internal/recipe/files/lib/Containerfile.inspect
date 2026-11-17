@@ -1,0 +1,6 @@
+# Inspection tools on top of the elemental3 image that built the node image: it already has
+# qemu-img, sfdisk, e2fsprogs (debugfs), mtools and cpio; squashfs adds unsquashfs.
+ARG ELEMENTAL_IMAGE
+FROM ${ELEMENTAL_IMAGE}
+RUN zypper --non-interactive install --no-recommends squashfs && zypper clean --all
+ENTRYPOINT ["/bin/bash"]

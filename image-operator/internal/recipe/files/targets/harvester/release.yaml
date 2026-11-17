@@ -1,0 +1,5 @@
+manifestURI: oci://@MANIFEST@
+components:
+  kubernetes: {}   # RKE2 from the release
+  helm:
+    - chart: elemental-lifecycle-manager

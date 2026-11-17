@@ -1,0 +1,7 @@
+Verbatim copy of the generic CAPI-ready image recipe of the Elemental 3 parity project
+(lab/generic-image: build.sh, inspect.sh, defaults.env, deviations.json, lib/, targets/),
+as of 2026-11-17. Do not edit these files here; change the recipe at its source and run
+"make sync-recipe RECIPE_SRC=<path to lab/generic-image>".
+
+This is lab tooling, not released tooling: defaults.env points at a fork branch of
+SUSE/elemental and deviations.json lists every difference from a released elemental3.

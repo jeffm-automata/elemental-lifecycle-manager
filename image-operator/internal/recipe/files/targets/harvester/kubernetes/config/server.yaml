@@ -1,0 +1,3 @@
+# Settings that hold for every cluster on this OS. Nothing that names a cluster or a node:
+# token, server, tls-san and node-name arrive at boot from the bootstrap provider.
+selinux: true

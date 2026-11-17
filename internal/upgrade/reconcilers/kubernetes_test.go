@@ -652,6 +652,77 @@ var _ = Describe("KubernetesReconciler", func() {
 				Expect(status).To(BeNil())
 			})
 		})
+
+		Context("with upgrade strategy Replace", func() {
+			var osPlan *upgradecattlev1.Plan
+
+			planNames := func() []string {
+				plans := &upgradecattlev1.PlanList{}
+				Expect(fakeClient.List(ctx, plans)).To(Succeed())
+				names := make([]string, 0, len(plans.Items))
+				for _, p := range plans.Items {
+					names = append(names, p.Name)
+				}
+				return names
+			}
+
+			BeforeEach(func() {
+				config.UpgradeStrategy = lifecyclev1alpha1.UpgradeStrategyReplace
+				release := config.ReleaseNamespacedName.Name
+
+				// Kubernetes plans of the target and of an older version, and an OS plan that is left alone.
+				var err error
+				osPlan, err = plan.OSControlPlane(release, "registry.example.com/os:v1.0.0", "v1.0.0", config.ReleaseVersion, false)
+				Expect(err).NotTo(HaveOccurred())
+				for _, p := range []*upgradecattlev1.Plan{
+					plan.KubernetesControlPlane(release, config.ReleaseVersion, testK8sVersion, false),
+					plan.KubernetesWorker(release, "v0.9.0", testOldK8sVersion, false, 1),
+					osPlan,
+				} {
+					Expect(fakeClient.Create(ctx, p)).To(Succeed())
+				}
+
+				fail := fmt.Errorf("must not be called for the Replace strategy")
+				mockPlanRec.ReconcileFn = func(context.Context, *upgradecattlev1.Plan) (*reconcilers.PlanResult, error) {
+					return nil, fail
+				}
+				mockPackagedHandler.GenerateSnapshotFn = func(context.Context, *upgrade.Config) (*reconcilers.PackagedComponentsSnapshot, error) {
+					return nil, fail
+				}
+			})
+
+			It("should wait without nodes", func() {
+				status, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+				Expect(status.Message).To(Equal("Upgrade strategy Replace: waiting for nodes to be replaced, 0 of 0 run v1.30.0"))
+			})
+
+			It("should count the replaced nodes, then succeed once all nodes run the target version", func() {
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("cp1", true, testutil.WithVersion("1.30.0")))).To(Succeed())
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("wk1", false, testutil.WithVersion(testK8sVersion)))).To(Succeed())
+				stale := testutil.NewTestNode("wk2", false, testutil.WithVersion(testOldK8sVersion))
+				Expect(fakeClient.Create(ctx, stale)).To(Succeed())
+
+				status, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+				Expect(status.Message).To(Equal("Upgrade strategy Replace: waiting for nodes to be replaced, 2 of 3 run v1.30.0"))
+				Expect(planNames()).To(ConsistOf(osPlan.Name))
+
+				Expect(fakeClient.Delete(ctx, stale)).To(Succeed())
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("wk3", false, testutil.WithVersion(testK8sVersion)))).To(Succeed())
+
+				status, err = reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeSucceeded))
+				Expect(status.Message).To(Equal("All 3 nodes run v1.30.0 (replaced)"))
+				Expect(planNames()).To(ConsistOf(osPlan.Name))
+			})
+		})
 	})
 
 })

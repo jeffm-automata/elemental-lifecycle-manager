@@ -352,5 +352,45 @@ var _ = Describe("OSReconciler", func() {
 				Expect(status.Message).To(ContainSubstring("Upgrade script failed"))
 			})
 		})
+
+		Context("with upgrade strategy Replace", func() {
+			It("should create no plan, delete the OS plans of the release and skip the phase", func() {
+				config.UpgradeStrategy = lifecyclev1alpha1.UpgradeStrategyReplace
+				release := config.ReleaseNamespacedName.Name
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("cp1", true))).To(Succeed())
+
+				// OS plans of the target and of an older version, a Kubernetes plan and a plan of another release.
+				current, err := plan.OSControlPlane(release, config.OS.Image, config.OS.Version, config.ReleaseVersion, false)
+				Expect(err).NotTo(HaveOccurred())
+				old, err := plan.OSWorker(release, "registry.example.com/os:v0.9.0", "v0.9.0", "v0.9.0", false, 1)
+				Expect(err).NotTo(HaveOccurred())
+				k8s := plan.KubernetesControlPlane(release, config.ReleaseVersion, "v1.30.0", false)
+				foreign, err := plan.OSControlPlane("other", config.OS.Image, "v0.8.0", "v0.8.0", false)
+				Expect(err).NotTo(HaveOccurred())
+				for _, p := range []*upgradecattlev1.Plan{current, old, k8s, foreign} {
+					Expect(fakeClient.Create(ctx, p)).To(Succeed())
+				}
+
+				mockPlanRec.ReconcileFn = func(context.Context, *upgradecattlev1.Plan) (*reconcilers.PlanResult, error) {
+					planReconcileCnt++
+					return nil, fmt.Errorf("no plan must be reconciled")
+				}
+
+				status, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeSkipped))
+				Expect(status.Message).To(Equal("Upgrade strategy Replace: the operating system comes with the node image of the release"))
+				Expect(planReconcileCnt).To(BeZero())
+
+				plans := &upgradecattlev1.PlanList{}
+				Expect(fakeClient.List(ctx, plans)).To(Succeed())
+				names := make([]string, 0, len(plans.Items))
+				for _, p := range plans.Items {
+					names = append(names, p.Name)
+				}
+				Expect(names).To(ConsistOf(k8s.Name, foreign.Name))
+			})
+		})
 	})
 })

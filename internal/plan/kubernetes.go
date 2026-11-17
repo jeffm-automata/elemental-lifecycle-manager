@@ -19,6 +19,7 @@ package plan
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	upgradecattlev1 "github.com/rancher/system-upgrade-controller/pkg/apis/upgrade.cattle.io/v1"
@@ -37,6 +38,11 @@ const (
 	// so the job gets the full drain timeout plus about twice that.
 	kubernetesJobDeadline = drainTimeout + 15*time.Minute
 )
+
+// IsKubernetes reports whether the given SUC Plan name is the name of a Kubernetes upgrade plan.
+func IsKubernetes(planName string) bool {
+	return strings.HasPrefix(planName, kubernetesControlPlaneBaseName+"-") || strings.HasPrefix(planName, kubernetesWorkerBaseName+"-")
+}
 
 // kubernetesControlPlaneName returns the full plan name for the given version.
 func kubernetesControlPlaneName(version string) string {

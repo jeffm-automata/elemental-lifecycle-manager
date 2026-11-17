@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"text/template"
 	"time"
 
@@ -49,6 +50,11 @@ const (
 
 //go:embed templates/os-upgrade.sh.tpl
 var osUpgradeScriptTpl string
+
+// IsOS reports whether the given SUC Plan name is the name of an operating system upgrade plan.
+func IsOS(planName string) bool {
+	return strings.HasPrefix(planName, osControlPlaneBaseName+"-") || strings.HasPrefix(planName, osWorkerBaseName+"-")
+}
 
 // osControlPlaneName returns the full plan name for the given version.
 func osControlPlaneName(version string) string {

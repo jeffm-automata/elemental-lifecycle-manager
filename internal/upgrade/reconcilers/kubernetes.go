@@ -101,6 +101,10 @@ func (r *KubernetesReconciler) Reconcile(ctx context.Context, config *upgrade.Co
 		"version", k8sConfig.Version,
 		"release", config.ReleaseNamespacedName.Name)
 
+	if config.ReplaceNodes() {
+		return r.reconcileReplace(ctx, config)
+	}
+
 	// Before doing any upgrades, generate a snapshot of the current Kubernetes related packaged component states.
 	snapshot, err := r.packagedComponentsHandler.GenerateSnapshot(ctx, config)
 	if err != nil {
@@ -178,6 +182,39 @@ func (r *KubernetesReconciler) Reconcile(ctx context.Context, config *upgrade.Co
 	return &upgrade.PhaseStatus{
 		State:   lifecyclev1alpha1.UpgradeSucceeded,
 		Message: "All nodes upgraded successfully",
+	}, nil
+}
+
+// reconcileReplace handles the Kubernetes phase when the nodes are replaced by an external actor. No Plan is
+// created and existing ones are deleted. The phase succeeds once the kubelet of every node reports the target version.
+// The packaged components snapshot and availability check of the in place upgrade are not run for this strategy.
+func (r *KubernetesReconciler) reconcileReplace(ctx context.Context, config *upgrade.Config) (*upgrade.PhaseStatus, error) {
+	if err := deleteReleasePlans(ctx, r.Client, config.ReleaseNamespacedName.Name, plan.IsKubernetes); err != nil {
+		return nil, fmt.Errorf("deleting Kubernetes upgrade plans: %w", err)
+	}
+
+	allNodes := &corev1.NodeList{}
+	if err := r.List(ctx, allNodes); err != nil {
+		return nil, fmt.Errorf("listing cluster nodes: %w", err)
+	}
+
+	version, total, replaced := config.Kubernetes.Version, len(allNodes.Items), 0
+	for _, node := range allNodes.Items {
+		if kubeletVersionMatches(node.Status.NodeInfo.KubeletVersion, version) {
+			replaced++
+		}
+	}
+
+	if total == 0 || replaced != total {
+		return &upgrade.PhaseStatus{
+			State:   lifecyclev1alpha1.UpgradeInProgress,
+			Message: fmt.Sprintf("Upgrade strategy Replace: waiting for nodes to be replaced, %d of %d run %s", replaced, total, version),
+		}, nil
+	}
+
+	return &upgrade.PhaseStatus{
+		State:   lifecyclev1alpha1.UpgradeSucceeded,
+		Message: fmt.Sprintf("All %d nodes run %s (replaced)", total, version),
 	}, nil
 }
 

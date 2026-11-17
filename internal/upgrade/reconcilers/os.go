@@ -19,6 +19,7 @@ package reconcilers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -49,6 +50,18 @@ func (r *OSReconciler) Phase() upgrade.Phase {
 func (r *OSReconciler) Reconcile(ctx context.Context, config *upgrade.Config) (*upgrade.PhaseStatus, error) {
 	if config == nil || config.OS == nil {
 		return r.Phase().SkippedStatus(), nil
+	}
+
+	if config.ReplaceNodes() {
+		// The replacement nodes must not be upgraded in place by a Plan of this or of an older release.
+		if err := deleteReleasePlans(ctx, r.Client, config.ReleaseNamespacedName.Name, plan.IsOS); err != nil {
+			return nil, fmt.Errorf("deleting OS upgrade plans: %w", err)
+		}
+
+		return &upgrade.PhaseStatus{
+			State:   lifecyclev1alpha1.UpgradeSkipped,
+			Message: "Upgrade strategy Replace: the operating system comes with the node image of the release",
+		}, nil
 	}
 
 	logger := log.FromContext(ctx)
@@ -126,6 +139,31 @@ func (r *OSReconciler) preparePlans(ctx context.Context, config *upgrade.Config)
 	}
 
 	return planList, nil
+}
+
+// deleteReleasePlans deletes the SUC Plans of the given Release, of any version, whose name is matched.
+func deleteReleasePlans(ctx context.Context, c client.Client, releaseName string, match func(planName string) bool) error {
+	planList := &upgradecattlev1.PlanList{}
+	if err := c.List(ctx, planList,
+		client.InNamespace(plan.Namespace),
+		client.MatchingLabels{lifecyclev1alpha1.ReleaseNameLabel: releaseName},
+	); err != nil {
+		return fmt.Errorf("listing plans: %w", err)
+	}
+
+	var deleteErrs []error
+	for _, p := range planList.Items {
+		if !match(p.Name) {
+			continue
+		}
+
+		log.FromContext(ctx).Info("Deleting plan, the nodes are replaced instead of upgraded in place", "name", p.Name)
+		if err := c.Delete(ctx, &p); client.IgnoreNotFound(err) != nil {
+			deleteErrs = append(deleteErrs, fmt.Errorf("deleting plan %s: %w", p.Name, err))
+		}
+	}
+
+	return errors.Join(deleteErrs...)
 }
 
 // workerPlanRequired reports whether the given worker plan is part of an upgrade phase. That is the case

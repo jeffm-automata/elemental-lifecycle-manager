@@ -188,7 +188,7 @@ func (p *Pod) service(req target.Request) *corev1.Service {
 			// The build container ends when the image is built, and a pod with an ended container is
 			// not ready. The result is fetched exactly then, so the Service must keep routing to it.
 			PublishNotReadyAddresses: true,
-			Ports:    []corev1.ServicePort{{Name: "http", Port: buildstatus.Port, TargetPort: intstr.FromInt32(buildstatus.Port)}},
+			Ports:                    []corev1.ServicePort{{Name: "http", Port: buildstatus.Port, TargetPort: intstr.FromInt32(buildstatus.Port)}},
 		},
 	}
 	svc.Labels = p.labels(req.Key)

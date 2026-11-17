@@ -24,6 +24,7 @@ spec:
   registry: "registry.example.org/project/release-manifest"
   disableDrain: true
   workerConcurrency: 2
+  upgradeStrategy: InPlace
   componentConfiguration:
     helm:
     - chart: example
@@ -46,6 +47,7 @@ spec:
 | `spec.registry`     | OCI registry from which LCM will fetch the release metadata. Metadata must be defined in the form of a [release manifest](https://github.com/SUSE/elemental/blob/main/docs/release-manifest.md).   | `true`   |
 | `spec.disableDrain` | Disables node drains during upgrade phases. Defaults to `false`.        | `false`  |
 | `spec.workerConcurrency` | Maximum number of worker nodes upgraded at the same time during the operating system and Kubernetes upgrade phases. Must be `1` or greater. Defaults to `1`. See [Worker Concurrency](#worker-concurrency). | `false`  |
+| `spec.upgradeStrategy` | How the nodes reach the operating system and Kubernetes versions of the release: `InPlace` or `Replace`. Defaults to `InPlace`. See [Upgrade Strategy](#upgrade-strategy). | `false`  |
 | `spec.componentConfiguration.helm` | Provide configurations to Helm chart components specified in the release. | `false` |
 
 ### Worker Concurrency
@@ -56,6 +58,15 @@ When setting this field, consider the following:
 
 * All worker nodes that are upgraded at the same time are cordoned and, unless draining is disabled, drained together. The remaining nodes must have the capacity to run the evicted workloads, and `PodDisruptionBudgets` must allow the evictions. A drain that cannot complete blocks the upgrade of that node.
 * The value is applied when LCM creates the [SUC Plans](https://github.com/rancher/system-upgrade-controller/tree/master#api-documentation) for an operating system or Kubernetes version. Plans that already exist for the same version are not changed.
+
+### Upgrade Strategy
+
+`spec.upgradeStrategy` selects how the nodes of the cluster reach the operating system and Kubernetes versions of the release:
+
+* `InPlace` (default, also when the field is not set): LCM upgrades every node in place through [SUC Plans](https://github.com/rancher/system-upgrade-controller/tree/master#api-documentation).
+* `Replace`: the nodes are replaced by an external actor, e.g. a Cluster API rollout to a node image of the target release. LCM upgrades no node in place: it creates no operating system or Kubernetes Plans and deletes the ones that it created for this `Release` earlier, of any version. The operating system phase is reported as `Skipped`, and the Kubernetes phase stays `InProgress` until the kubelet of every node reports the Kubernetes version of the release. The LCM and Helm chart phases run as usual.
+
+> WARNING: Choose the strategy before triggering an upgrade. Switching the strategy while an in-place upgrade is running deletes Plans whose jobs may be in flight and can leave a node cordoned.
 
 ### Component Configurations
 

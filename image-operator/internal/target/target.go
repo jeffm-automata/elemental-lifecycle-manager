@@ -88,6 +88,8 @@ type Artifact struct {
 type Build struct {
 	State BuildState
 	Name  string
+	// Backend names the kind of builder: "vm" or "pod".
+	Backend string
 	// Created is when the builder was created; build deadlines count from here.
 	Created time.Time
 	// Step is what a running builder is doing.

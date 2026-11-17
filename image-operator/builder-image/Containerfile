@@ -1,0 +1,16 @@
+# Builder image of the pod builder: the elemental3 tool image plus what the build recipe and its
+# inspection call (python3, yq, unsquashfs), and a stand-in for podman, because the recipe starts
+# its tools as containers and a pod can not start containers.
+#   podman build --build-arg ELEMENTAL_IMAGE=<elemental3 image> -t <builder image> -f builder-image/Containerfile builder-image
+# The elemental3 commit in the image must be the one the operator runs with (--elemental-commit);
+# the builder checks it before it builds.
+ARG ELEMENTAL_IMAGE
+FROM ${ELEMENTAL_IMAGE}
+RUN zypper --non-interactive install --no-recommends python3 yq squashfs tar gzip && zypper clean --all
+COPY e3-podman /usr/local/bin/e3-podman
+# The recipe gives its tools fixed paths (podman -v <dir>:/config ...). The stand-in makes the same
+# paths work without a mount: they are links into the work volume, set per call. The root file
+# system of the pod stays read-only.
+RUN chmod 0755 /usr/local/bin/e3-podman && \
+    for p in config cache out in e3p-lib; do ln -s /work/mnt/$p /$p; done
+ENTRYPOINT ["/bin/bash"]

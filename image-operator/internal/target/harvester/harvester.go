@@ -53,6 +53,9 @@ const (
 	annImageID    = "harvesterhci.io/imageId"
 	labelVMName   = "harvesterhci.io/vmName"
 
+	// Backend is how this package's builder is named in a request and its status.
+	Backend = "vm"
+
 	httpPort = buildstatus.Port
 	keyName  = "name"
 	virtio   = "virtio"
@@ -278,15 +281,15 @@ func (h *Harvester) Status(ctx context.Context, req target.Request) (target.Buil
 	}
 	if !found {
 		if !claimed {
-			return target.Build{State: target.BuildAbsent, Name: name}, nil
+			return target.Build{State: target.BuildAbsent, Name: name, Backend: Backend}, nil
 		}
-		return target.Build{State: target.BuildRunning, Name: name, Created: secret.CreationTimestamp.Time, Step: "preparing the builder"}, nil
+		return target.Build{State: target.BuildRunning, Name: name, Backend: Backend, Created: secret.CreationTimestamp.Time, Step: "preparing the builder"}, nil
 	}
 	created := vm.GetCreationTimestamp().Time
 	if claimed {
 		created = secret.CreationTimestamp.Time
 	}
-	b := target.Build{State: target.BuildRunning, Name: name, Created: created}
+	b := target.Build{State: target.BuildRunning, Name: name, Backend: Backend, Created: created}
 	raw, err := h.Fetch(ctx, h.Namespace, name, buildstatus.File)
 	if err != nil {
 		printable, _, _ := unstructured.NestedString(vm.Object, "status", "printableStatus")

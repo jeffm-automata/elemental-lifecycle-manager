@@ -80,29 +80,43 @@ ExecStart=/usr/bin/python3 -m http.server 8080 --directory /var/lib/e3-build/out
 Restart=always
 `
 
-// userData renders the #cloud-config document of the builder VM. It contains no credential.
-func (h *Harvester) userData(req target.Request) ([]byte, error) {
+// BuildEnv renders the shell variables a builder's run script reads (the request and the tooling),
+// after checking every value that reaches a shell. Every builder backend uses it.
+func BuildEnv(req target.Request, elementalRepo, elementalRef string) (string, error) {
 	for name, check := range map[string]struct {
 		re *regexp.Regexp
 		v  string
 	}{
 		"release manifest": {safeRef, req.ManifestRef}, "manifest digest": {safeRef, req.ManifestDigest},
 		"architecture": {safeWord, req.Arch}, "disk size": {safeWord, req.DiskSize}, "cache key": {safeWord, req.Key},
-		"elemental repository": {safeURL, h.Builder.ElementalRepo}, "elemental ref": {safeWord, h.Builder.ElementalRef},
+		"elemental repository": {safeURL, elementalRepo}, "elemental ref": {safeWord, elementalRef},
 	} {
 		if !check.re.MatchString(check.v) {
-			return nil, fmt.Errorf("%s %q has characters that are not allowed", name, check.v)
+			return "", fmt.Errorf("%s %q has characters that are not allowed", name, check.v)
 		}
+	}
+	for _, cv := range req.ChartValues {
+		if !safeChart.MatchString(cv.Chart) {
+			return "", fmt.Errorf("chart name %q has characters that are not allowed", cv.Chart)
+		}
+	}
+	return strings.Join([]string{
+		"MANIFEST='" + req.ManifestRef + "'", "EXPECT_DIGEST='" + req.ManifestDigest + "'", "TARGET='harvester'",
+		"ARCH='" + req.Arch + "'", "DISK_SIZE='" + req.DiskSize + "'", "NAME='" + FileBase(req) + "'", "KEY='" + req.Key + "'",
+		"ELEMENTAL_REPO='" + elementalRepo + "'", "ELEMENTAL_REF='" + elementalRef + "'", "",
+	}, "\n"), nil
+}
+
+// userData renders the #cloud-config document of the builder VM. It contains no credential.
+func (h *Harvester) userData(req target.Request) ([]byte, error) {
+	env, err := BuildEnv(req, h.Builder.ElementalRepo, h.Builder.ElementalRef)
+	if err != nil {
+		return nil, err
 	}
 	tarball, err := recipe.Tarball()
 	if err != nil {
 		return nil, err
 	}
-	env := strings.Join([]string{
-		"MANIFEST='" + req.ManifestRef + "'", "EXPECT_DIGEST='" + req.ManifestDigest + "'", "TARGET='harvester'",
-		"ARCH='" + req.Arch + "'", "DISK_SIZE='" + req.DiskSize + "'", "NAME='" + FileBase(req) + "'", "KEY='" + req.Key + "'",
-		"ELEMENTAL_REPO='" + h.Builder.ElementalRepo + "'", "ELEMENTAL_REF='" + h.Builder.ElementalRef + "'", "",
-	}, "\n")
 	files := []writeFile{
 		{Path: "/etc/e3-build/env", Permissions: "0644", Content: env},
 		b64File("/etc/e3-build/recipe.tgz", "0644", tarball),
@@ -114,9 +128,6 @@ func (h *Harvester) userData(req target.Request) ([]byte, error) {
 		{Path: "/etc/systemd/system/e3-build-http.service", Permissions: "0644", Content: httpUnit},
 	}
 	for _, cv := range req.ChartValues {
-		if !safeChart.MatchString(cv.Chart) {
-			return nil, fmt.Errorf("chart name %q has characters that are not allowed", cv.Chart)
-		}
 		files = append(files, b64File("/etc/e3-build/chart-values/"+cv.Chart+".yaml", "0644", []byte(cv.Values)))
 	}
 	doc := map[string]any{

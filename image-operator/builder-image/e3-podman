@@ -1,0 +1,52 @@
+#!/bin/bash
+# Stand-in for podman inside the builder pod (PODMAN=/usr/local/bin/e3-podman). The build recipe
+# starts elemental3 and its inspection tools as containers; here they are already in the image, so
+# "run" executes the program directly, with the privileges the pod has and no others. The flags that
+# would give a container more (--privileged, --network host, --security-opt) are accepted and ignored.
+# Supported: image exists, image inspect --format, run. Anything else fails.
+set -euo pipefail
+MNT="${E3_MNT:-/work/mnt}"
+die() { echo "e3-podman: $*" >&2; exit 125; }
+is_tool() { [ "$1" = "${E3_TOOL_IMAGE:?}" ]; }
+is_inspect() { case "$1" in localhost/e3p-generic-image/inspect:*) return 0 ;; *) return 1 ;; esac; }
+
+# bind <source>:<path in container>[:options] -> link under $MNT that the image's /<name> link reaches.
+bind() {
+  local src="${1%%:*}" rest="${1#*:}"; local dst="${rest%%:*}"
+  case "$dst" in
+    /config|/cache|/out|/e3p-lib) rm -rf -- "${MNT:?}${dst}"; ln -s "$src" "$MNT$dst" ;;
+    /in/*) mkdir -p "$MNT/in"; rm -rf -- "${MNT:?}${dst}"; ln -s "$src" "$MNT$dst" ;;
+    *) die "no link for container path $dst" ;;
+  esac
+}
+
+case "${1:-} ${2:-}" in
+  "image exists")
+    is_tool "${3:-}" || is_inspect "${3:-}" || exit 1 ;;
+  "image inspect")
+    [ "${3:-}" = --format ] || die "image inspect needs --format"
+    is_tool "${5:-}" || die "unknown image ${5:-}"
+    case "$4" in
+      '{{.Digest}}') echo "${E3_TOOL_IMAGE_DIGEST:-}" ;;
+      '{{.Id}}') echo "${E3_TOOL_IMAGE_ID:-builderimage}" ;;
+      *) die "unknown format $4" ;;
+    esac ;;
+  run\ *)
+    shift; entry=""
+    mkdir -p "$MNT"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --rm|--privileged) shift ;;
+        --network|--security-opt|--platform) shift 2 ;;
+        -v) bind "$2"; shift 2 ;;
+        --entrypoint) entry="$2"; shift 2 ;;
+        -*) die "unknown flag $1" ;;
+        *) break ;;
+      esac
+    done
+    image="${1:-}"; shift || die "run needs an image"
+    if is_tool "$image"; then exec "${entry:-elemental3}" "$@"
+    elif is_inspect "$image"; then exec "${entry:-/bin/bash}" "$@"
+    else die "unknown image $image"; fi ;;
+  *) die "unsupported: $*" ;;
+esac

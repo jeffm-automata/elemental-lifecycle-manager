@@ -10,10 +10,10 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-# Install the two custom resource definitions with the chart. They are kept when the chart is
-# uninstalled (helm.sh/resource-policy: keep); delete them by hand to remove the catalog objects.
-crds:
-  install: true
+# The two custom resource definitions are in crds/: Helm installs them before everything else on the
+# first install, never changes them afterwards and keeps them on uninstall. To update them:
+#   kubectl apply --server-side -f charts/elemental-release-catalog/crds/
+# Deleting them deletes every ReleaseSource and AvailableRelease.
 
 # ClusterRole "<fullname>-reader": get, list, watch on the catalog objects. Bind it to the users
 # who may see the catalog; set authenticated to true to bind it to every authenticated user.

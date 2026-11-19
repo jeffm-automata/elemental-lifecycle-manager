@@ -7,10 +7,15 @@ not need Rancher, Cluster API or the Lifecycle Manager itself.
 
 ```sh
 helm install release-catalog charts/elemental-release-catalog -n elemental-catalog --create-namespace \
-  --set image.repository=<registry>/elemental-release-catalog
-kubectl apply -f config/samples/lifecycle_v1alpha1_releasesource.yaml
+  --set image.repository=<registry>/elemental-release-catalog \
+  --set sources.suse-core.registry=registry.suse.com/beta/uc/rke2/rke2-manifest
 kubectl get releasesources,availablereleases
 ```
+
+Sources can be given as chart values (`sources.<name>`) or created afterwards
+(`config/samples/lifecycle_v1alpha1_releasesource.yaml`). The definitions are in the chart's `crds/` directory
+and identical to `config/crd/bases/`; Helm installs them once and does not update them
+(`kubectl apply --server-side -f charts/elemental-release-catalog/crds/`).
 
 ## Objects (`lifecycle.suse.com/v1alpha1`, both cluster-scoped)
 

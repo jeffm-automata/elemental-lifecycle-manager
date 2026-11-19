@@ -131,10 +131,14 @@ func parseUpgradeScript(osImage string) (string, error) {
 
 	data := struct {
 		FetchRemote    bool
+		OSImage        string
 		OSImageRepo    string
 		OSImageVersion string
 	}{
-		FetchRemote:    fetchRemote(),
+		FetchRemote: fetchRemote(),
+		// The release marker of a freshly installed system names the OS image exactly
+		// as the release manifest does, so the reference is passed on unmodified.
+		OSImage:        osImage,
 		OSImageRepo:    ref.Context().Name(),
 		OSImageVersion: ref.TagStr(),
 	}

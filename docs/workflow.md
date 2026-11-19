@@ -28,6 +28,13 @@ LCM deploys the aforementioned `SUC Plans` in **sequence**, where the `worker` n
 
 After each plan is deployed, SUC creates the corresponding upgrade workloads for the targeted node group. Each workload handles a single node, and SUC creates them **sequentially**, ensuring that nodes within the group are upgraded one at a time. Each created workload uses the [SUSE/elemental](https://github.com/SUSE/elemental/tree/main) tool stack to perform the necessary upgrade steps.
 
+A workload does not upgrade a node that already runs the operating system image of the desired release. It determines this from the files that the [SUSE/elemental](https://github.com/SUSE/elemental/tree/main) tool stack keeps in `/etc/elemental` on the node:
+
+* A node that was upgraded before records the image it was upgraded to as `sourceOS` in `deployment.yaml`.
+* A freshly installed node only records that it was installed from installer media. For such a node the workload reads the release marker `release.yaml`, which `elemental3 customize` adds to the images it builds. The node is left alone only if `osImage` in the marker is exactly the operating system image reference of the release manifest. The marker is ignored once `deployment.yaml` refers to an OCI image.
+
+In any other case, including a missing or unreadable release marker, the node is upgraded.
+
 A successful node operating system upgrade is indicated by the node rebooting and becoming available again. Once this happens, SUC creates the workload for the next node. The operating system upgrade phase is marked as `Completed` only after all `control-plane` and `worker` workloads complete successfully.
 
 ## Kubernetes Upgrade Phase

@@ -18,7 +18,10 @@ limitations under the License.
 package plan
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -41,14 +44,14 @@ var _ = Describe("OS plan tests", func() {
 
 HOST="${HOST:-/host}"
 DEPLOYMENT="${DEPLOYMENT:-$HOST/etc/elemental/deployment.yaml}"
+RELEASE_MARKER="${RELEASE_MARKER:-$HOST/etc/elemental/release.yaml}"
+OS_IMAGE="registry.example.com/elemental-os:1.2.3"
 OS_IMAGE_REPO="registry.example.com/elemental-os"
 OS_VERSION="1.2.3"
 INCOMING="$OS_IMAGE_REPO:$OS_VERSION"
 CURRENT=$(grep -F "uri: oci://$OS_IMAGE_REPO" "$DEPLOYMENT" 2>/dev/null || true)
+SOURCE=$(grep -F "uri: " "$DEPLOYMENT" 2>/dev/null || true)
 
-# On fresh systems, we have a sourceOS specified with raw (e.g. raw://../squashfs.img) data
-# instead of from an OCI image, so for instances that CURRENT is empty we
-# assume that this is a fresh system and proceed with the upgrade.
 if [ -n "$CURRENT" ]; then
 	# Extract the prefix (e.g. "uri: oci://") before the OS_IMAGE_REPO,
 	# so that it can be stripped in the next step.
@@ -59,6 +62,25 @@ if [ -n "$CURRENT" ]; then
         exit 0
     fi
 fi
+
+# On fresh systems, we have a sourceOS specified with raw (e.g. raw://../squashfs.img) data
+# instead of from an OCI image, so the deployment does not tell which OS image the system runs.
+# Images built by 'elemental3 customize' record that in a release marker, which names the
+# OS image exactly as the release manifest that the image was built from does.
+#
+# The marker describes the installation only, so it is ignored as soon as the deployment refers
+# to an OCI image. Without a marker, or with one that names any other image, we assume that the
+# system has to be upgraded.
+case "$SOURCE" in
+    "" | *"uri: oci://"*) ;;
+    *)
+        INSTALLED=$(sed -n 's/^osImage:[[:space:]]*\(.*[^[:space:]]\)[[:space:]]*$/\1/p' "$RELEASE_MARKER" 2>/dev/null | head -n 1)
+        if [ -n "$INSTALLED" ] && [ "$INSTALLED" = "$OS_IMAGE" ]; then
+            echo "System was installed from OS image $OS_IMAGE. No upgrade needed."
+            exit 0
+        fi
+        ;;
+esac
 
 upgrader "$INCOMING" && chroot /host reboot
 `
@@ -196,6 +218,132 @@ upgrader "$INCOMING" && chroot /host reboot
 			Expect(plan.Spec.Drain.Force).To(BeTrue())
 			Expect(plan.Spec.Drain.Timeout.String()).To(Equal("15m"))
 		})
+	})
+
+	Describe("Upgrade script execution", func() {
+		const (
+			rawDeployment = `# self-generated content, do not edit
+
+sourceOS:
+    uri: raw:///run/initramfs/live/LiveOS/squashfs.img
+disks:
+    - partitions: []
+`
+			ociDeploymentFmt = `# self-generated content, do not edit
+
+sourceOS:
+    digest: sha256:2d195da213f9ae85ff9444f224aa487e9dbd3cd8891599ae022eeb5f04a17fb2
+    uri: oci://%s
+disks:
+    - partitions: []
+`
+			markerFmt = `# self-generated content, do not edit
+
+releaseManifest: oci://registry.example.com/release-manifest:0.6.0
+osImage: %s
+installerImage: registry.example.com/elemental-os-iso:1.2.3
+`
+			noDeployment = ""
+			noMarker     = ""
+		)
+
+		// runUpgradeScript runs the OS upgrade script against a fake host and reports
+		// its output and the image the OS upgrade was started with, if it was started at all.
+		runUpgradeScript := func(deployment, marker string) (output, upgradedTo string, rebooted bool) {
+			script, err := parseUpgradeScript(osImage)
+			Expect(err).ToNot(HaveOccurred())
+
+			host := GinkgoT().TempDir()
+			Expect(os.MkdirAll(filepath.Join(host, "etc", "elemental"), 0o755)).To(Succeed())
+			if deployment != noDeployment {
+				Expect(os.WriteFile(filepath.Join(host, "etc", "elemental", "deployment.yaml"), []byte(deployment), 0o444)).To(Succeed())
+			}
+			if marker != noMarker {
+				Expect(os.WriteFile(filepath.Join(host, "etc", "elemental", "release.yaml"), []byte(marker), 0o444)).To(Succeed())
+			}
+
+			// The script ends in 'upgrader <image> && chroot /host reboot'; both commands are replaced.
+			bin := GinkgoT().TempDir()
+			calls := GinkgoT().TempDir()
+			Expect(os.WriteFile(filepath.Join(bin, "upgrader"), []byte("#!/bin/sh\nprintf '%s' \"$1\" > \"$CALLS/upgrader\"\n"), 0o755)).To(Succeed())
+			Expect(os.WriteFile(filepath.Join(bin, "chroot"), []byte("#!/bin/sh\nprintf '%s' \"$*\" > \"$CALLS/chroot\"\n"), 0o755)).To(Succeed())
+
+			cmd := exec.Command(osUpgradeShell, "-c", script)
+			cmd.Env = []string{
+				"HOST=" + host,
+				"CALLS=" + calls,
+				"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"),
+			}
+			out, err := cmd.CombinedOutput()
+			Expect(err).ToNot(HaveOccurred(), string(out))
+
+			upgraded, err := os.ReadFile(filepath.Join(calls, "upgrader"))
+			if err != nil {
+				Expect(os.IsNotExist(err)).To(BeTrue())
+			}
+			chroot, err := os.ReadFile(filepath.Join(calls, "chroot"))
+			if err != nil {
+				Expect(os.IsNotExist(err)).To(BeTrue())
+			}
+
+			return string(out), string(upgraded), string(chroot) == "/host reboot"
+		}
+
+		DescribeTable("skips the upgrade",
+			func(deployment, marker, message string) {
+				output, upgradedTo, rebooted := runUpgradeScript(deployment, marker)
+				Expect(upgradedTo).To(BeEmpty())
+				Expect(rebooted).To(BeFalse())
+				Expect(output).To(ContainSubstring(message))
+			},
+			Entry("on a freshly installed system whose release marker names the target OS image",
+				rawDeployment, fmt.Sprintf(markerFmt, osImage), "System was installed from OS image "+osImage),
+			Entry("on a freshly installed system whose release marker has trailing whitespace",
+				rawDeployment, "osImage: "+osImage+"  \n", "System was installed from OS image "+osImage),
+			Entry("on a system already upgraded to the target OS image",
+				fmt.Sprintf(ociDeploymentFmt, osImage), noMarker, "Active OS image is already at correct version"),
+			Entry("on a system already upgraded to the target OS image that still has a release marker for another image",
+				fmt.Sprintf(ociDeploymentFmt, osImage), fmt.Sprintf(markerFmt, "registry.example.com/elemental-os:1.0.0"),
+				"Active OS image is already at correct version"),
+		)
+
+		DescribeTable("upgrades and reboots",
+			func(deployment, marker string) {
+				output, upgradedTo, rebooted := runUpgradeScript(deployment, marker)
+				Expect(upgradedTo).To(Equal(osImage), output)
+				Expect(rebooted).To(BeTrue())
+			},
+			Entry("a freshly installed system without a release marker", rawDeployment, noMarker),
+			Entry("a freshly installed system with an empty release marker", rawDeployment, "\n"),
+			Entry("a freshly installed system whose release marker is not valid",
+				rawDeployment, "osImage\n  - "+osImage+"\n"),
+			Entry("a freshly installed system whose release marker names another tag of the OS image",
+				rawDeployment, fmt.Sprintf(markerFmt, "registry.example.com/elemental-os:1.2.2")),
+			Entry("a freshly installed system whose release marker names a longer tag starting with the target tag",
+				rawDeployment, fmt.Sprintf(markerFmt, osImage+"0")),
+			Entry("a freshly installed system whose release marker names a shorter tag the target tag starts with",
+				rawDeployment, fmt.Sprintf(markerFmt, "registry.example.com/elemental-os:1.2")),
+			Entry("a freshly installed system whose release marker names the same tag in another repository",
+				rawDeployment, fmt.Sprintf(markerFmt, "registry.example.com/other-os:1.2.3")),
+			Entry("a freshly installed system whose release marker names the target OS image pinned to a digest",
+				rawDeployment, fmt.Sprintf(markerFmt, osImage+"@sha256:2d195da213f9ae85ff9444f224aa487e9dbd3cd8891599ae022eeb5f04a17fb2")),
+			Entry("a freshly installed system whose release marker names the target only as installer image",
+				rawDeployment, "installerImage: "+osImage+"\n"),
+			Entry("a freshly installed system whose release marker names the target OS image in a nested field",
+				rawDeployment, "previous:\n  osImage: "+osImage+"\n"),
+			Entry("a freshly installed system whose release marker quotes the OS image",
+				rawDeployment, "osImage: \""+osImage+"\"\n"),
+			Entry("a system upgraded to another OS image that still has the release marker of its installation",
+				fmt.Sprintf(ociDeploymentFmt, "registry.example.com/elemental-os:1.3.0"), fmt.Sprintf(markerFmt, osImage)),
+			Entry("a system upgraded to an OS image of another repository that still has the release marker of its installation",
+				fmt.Sprintf(ociDeploymentFmt, "registry.example.com/other-os:9.9.9"), fmt.Sprintf(markerFmt, osImage)),
+			Entry("a system upgraded to another OS image without a release marker",
+				fmt.Sprintf(ociDeploymentFmt, "registry.example.com/elemental-os:1.0.0"), noMarker),
+			Entry("a system without a deployment file, even if a release marker names the target OS image",
+				noDeployment, fmt.Sprintf(markerFmt, osImage)),
+			Entry("a system with an empty deployment file, even if a release marker names the target OS image",
+				"\n", fmt.Sprintf(markerFmt, osImage)),
+		)
 	})
 
 	Describe("Upgrade script", func() {

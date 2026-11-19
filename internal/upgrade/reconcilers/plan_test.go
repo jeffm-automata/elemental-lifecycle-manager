@@ -165,6 +165,74 @@ var _ = Describe("SUCPlanReconciler", func() {
 			Expect(result.Status.Message).To(ContainSubstring("upgrade script exited with code 1"))
 		})
 
+		Context("when a job of the plan has failed", func() {
+			const (
+				failedNode       = "failed-node"
+				jobFailedMessage = "Job cattle-system/apply-test-plan-on-failed-node failed on Node failed-node: DeadlineExceeded: Job was active longer than specified deadline"
+			)
+
+			BeforeEach(func() {
+				// SUC keeps the node of the failed job in the list of nodes the plan is applied on.
+				desiredPlan.Status.Applying = []string{failedNode}
+				desiredPlan.Status.Conditions = []genericcondition.GenericCondition{
+					{
+						Type:    string(upgradecattlev1.PlanComplete),
+						Status:  corev1.ConditionFalse,
+						Reason:  "JobFailed",
+						Message: jobFailedMessage,
+					},
+				}
+				Expect(fakeClient.Create(ctx, desiredPlan)).To(Succeed())
+			})
+
+			It("should return failed status although the plan is still applying on the node", func() {
+				node := testutil.NewTestNode(failedNode, false)
+				Expect(fakeClient.Create(ctx, node)).To(Succeed())
+
+				result, err := reconciler.Reconcile(ctx, desiredPlan)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Status.State).To(Equal(lifecyclev1alpha1.UpgradeFailed))
+				Expect(result.Status.Message).To(Equal("Plan test-plan failed: " + jobFailedMessage))
+				Expect(result.Nodes).To(BeEmpty())
+			})
+
+			It("should report that the node of the failed job is still cordoned", func() {
+				node := testutil.NewTestNode(failedNode, false)
+				node.Spec.Unschedulable = true
+				Expect(fakeClient.Create(ctx, node)).To(Succeed())
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("node2", false))).To(Succeed())
+
+				result, err := reconciler.Reconcile(ctx, desiredPlan)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Status.State).To(Equal(lifecyclev1alpha1.UpgradeFailed))
+				Expect(result.Status.Message).To(Equal("Plan test-plan failed: " + jobFailedMessage + ". Still cordoned: " + failedNode))
+			})
+
+			It("should find the node of the failed job by its hostname", func() {
+				node := testutil.NewTestNode(failedNode+".example.com", false)
+				node.Labels[corev1.LabelHostname] = failedNode
+				node.Spec.Unschedulable = true
+				Expect(fakeClient.Create(ctx, node)).To(Succeed())
+
+				result, err := reconciler.Reconcile(ctx, desiredPlan)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Status.Message).To(HaveSuffix(". Still cordoned: " + failedNode))
+			})
+
+			It("should report that the node of the failed job is gone", func() {
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("node2", false))).To(Succeed())
+
+				result, err := reconciler.Reconcile(ctx, desiredPlan)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Status.State).To(Equal(lifecyclev1alpha1.UpgradeFailed))
+				Expect(result.Status.Message).To(HaveSuffix(". No longer part of the cluster: " + failedNode))
+			})
+		})
+
 		Context("when plan is complete", func() {
 			BeforeEach(func() {
 				desiredPlan.Status.Conditions = []genericcondition.GenericCondition{

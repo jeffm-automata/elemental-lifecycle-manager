@@ -26,6 +26,7 @@ import (
 
 	"github.com/suse/elemental/v3/pkg/manifest/api"
 	"go.yaml.in/yaml/v3"
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -82,6 +83,7 @@ type ReleaseReconciler struct {
 // +kubebuilder:rbac:groups=upgrade.cattle.io,resources=plans,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=helm.cattle.io,resources=helmcharts,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 // +kubebuilder:rbac:urls=/version,verbs=get
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -437,40 +439,30 @@ func (r *ReleaseReconciler) parseUpgradeConfig(ctx context.Context, manifest *re
 		&upgrade.RuntimeConfig{DrainOpts: opts, HelmCharts: runtimeCharts})
 }
 
-// handleSUCOwner determines which is the owner of the system-upgrade-controller. If Rancher is deployed, then
-// SUC is dropped from the standard upgrade and configuration approach and all management is left to Rancher.
-// If Rancher is missing, then all management is left to LCM.
+const (
+	sucChartName        = "system-upgrade-controller"
+	rancherName         = "rancher"
+	rancherNamespace    = "cattle-system"
+	rancherClusterAgent = "cattle-cluster-agent"
+)
+
+// handleSUCOwner determines which is the owner of the system-upgrade-controller. If Rancher is deployed, or the
+// cluster is managed by a Rancher deployed elsewhere, then SUC is dropped from the standard upgrade and
+// configuration approach and all management is left to Rancher. If Rancher is missing, then all management
+// is left to LCM.
 func (r *ReleaseReconciler) handleSUCOwner(ctx context.Context, manifest *resolver.ResolvedManifest,
 	runtimeCharts map[string]upgrade.RuntimeHelmChartConfig) error {
-	const (
-		sucChartName     = "system-upgrade-controller"
-		rancherName      = "rancher"
-		rancherNamespace = "cattle-system"
-	)
-
 	if manifest == nil || manifest.CorePlatform == nil {
 		return nil
 	}
 
-	helmChart := &helmv1.HelmChart{}
-	err := r.Get(ctx, types.NamespacedName{Namespace: reconcilers.HelmChartNamespace, Name: rancherName}, helmChart)
-	switch {
-	case err == nil:
-		// Rancher is not deployed in the supported "cattle-system" namespace, so SUC is kept.
-		if helmChart.Spec.TargetNamespace != rancherNamespace {
-			return nil
-		}
-	case !apierrors.IsNotFound(err):
-		return fmt.Errorf("retrieving %s helm chart: %w", rancherName, err)
-	default:
-		// No HelmChart found for Rancher, check for a Helm release in the supported "cattle-system" namespace.
-		if _, err := r.HelmClient.RetrieveNamespacedRelease(rancherNamespace, rancherName); err != nil {
-			// No Helm release in "cattle-system", hence Rancher is not deployed there and SUC is kept.
-			if errors.Is(err, helm.ErrReleaseNotFound) {
-				return nil
-			}
-			return fmt.Errorf("retrieving %s helm release: %w", rancherName, err)
-		}
+	rancherOwned, err := r.rancherOwnsSUC(ctx)
+	if err != nil {
+		return err
+	}
+
+	if !rancherOwned {
+		return nil
 	}
 
 	delete(runtimeCharts, sucChartName)
@@ -481,6 +473,10 @@ func (r *ReleaseReconciler) handleSUCOwner(ctx context.Context, manifest *resolv
 	}
 
 	for _, h := range helmConfs {
+		if h == nil {
+			continue
+		}
+
 		h.Charts = slices.DeleteFunc(h.Charts, func(c *api.HelmChart) bool { return c.Chart == sucChartName })
 		for _, c := range h.Charts {
 			if c.Chart == rancherName {
@@ -490,6 +486,42 @@ func (r *ReleaseReconciler) handleSUCOwner(ctx context.Context, manifest *resolv
 	}
 
 	return nil
+}
+
+// rancherOwnsSUC reports whether Rancher manages the system-upgrade-controller of this cluster. That is the case
+// when Rancher itself is deployed in the supported "cattle-system" namespace, and when the cluster is managed by a
+// Rancher that runs elsewhere (an imported or provisioned cluster), which is recognised by the cluster agent
+// that Rancher deploys. In both cases Rancher installs and upgrades its own system-upgrade-controller chart
+// in the same Helm release that Elemental uses.
+func (r *ReleaseReconciler) rancherOwnsSUC(ctx context.Context) (bool, error) {
+	agent := &appsv1.Deployment{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: rancherNamespace, Name: rancherClusterAgent}, agent)
+	if err == nil {
+		return true, nil
+	} else if !apierrors.IsNotFound(err) {
+		return false, fmt.Errorf("retrieving %s deployment: %w", rancherClusterAgent, err)
+	}
+
+	helmChart := &helmv1.HelmChart{}
+	err = r.Get(ctx, types.NamespacedName{Namespace: reconcilers.HelmChartNamespace, Name: rancherName}, helmChart)
+	switch {
+	case err == nil:
+		// When Rancher is not deployed in the supported "cattle-system" namespace, SUC is kept.
+		return helmChart.Spec.TargetNamespace == rancherNamespace, nil
+	case !apierrors.IsNotFound(err):
+		return false, fmt.Errorf("retrieving %s helm chart: %w", rancherName, err)
+	}
+
+	// No HelmChart found for Rancher, check for a Helm release in the supported "cattle-system" namespace.
+	if _, err := r.HelmClient.RetrieveNamespacedRelease(rancherNamespace, rancherName); err != nil {
+		// No Helm release in "cattle-system", hence Rancher is not deployed there and SUC is kept.
+		if errors.Is(err, helm.ErrReleaseNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("retrieving %s helm release: %w", rancherName, err)
+	}
+
+	return true, nil
 }
 
 // validateKnownFields reports whether there are Release fields that this LCM version does not support.

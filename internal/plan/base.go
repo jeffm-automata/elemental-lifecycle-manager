@@ -18,6 +18,9 @@ limitations under the License.
 package plan
 
 import (
+	"fmt"
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
@@ -30,9 +33,19 @@ const (
 
 	// ControlPlaneLabel is an identifier of control plane nodes.
 	ControlPlaneLabel = "node-role.kubernetes.io/control-plane"
+
+	// drainTimeout is the time a node is given to evict its workloads.
+	drainTimeout = 15 * time.Minute
 )
 
-func basePlan(name string, drain bool) *upgradecattlev1.Plan {
+// basePlan returns the parts of a SUC Plan that are common to all upgrade plans.
+//
+// The job deadline is the time, in seconds, that SUC gives a single upgrade job. A job covers everything
+// that happens on a node: pulling the images, the drain, the upgrade itself, a reboot or restart of the node
+// and the pod that confirms the result afterwards. SUC falls back to a controller wide default when a Plan
+// does not set a deadline (900 seconds as deployed by its chart), and a job that exceeds it is failed and
+// not started again.
+func basePlan(name string, drain bool, jobDeadline time.Duration) *upgradecattlev1.Plan {
 	const (
 		kind               = "Plan"
 		apiVersion         = "upgrade.cattle.io/v1"
@@ -49,12 +62,13 @@ func basePlan(name string, drain bool) *upgradecattlev1.Plan {
 			Namespace: Namespace,
 		},
 		Spec: upgradecattlev1.PlanSpec{
-			ServiceAccountName: serviceAccountName,
+			ServiceAccountName:    serviceAccountName,
+			JobActiveDeadlineSecs: new(int64(jobDeadline.Seconds())),
 		},
 	}
 
 	if drain {
-		timeout := intstr.FromString("15m")
+		timeout := intstr.FromString(drainTimeoutString())
 		deleteEmptyDirData := true
 		ignoreDaemonSets := true
 		plan.Spec.Drain = &upgradecattlev1.DrainSpec{
@@ -70,4 +84,9 @@ func basePlan(name string, drain bool) *upgradecattlev1.Plan {
 	}
 
 	return plan
+}
+
+// drainTimeoutString returns the drain timeout in the form that SUC expects, e.g. "15m".
+func drainTimeoutString() string {
+	return fmt.Sprintf("%dm", int(drainTimeout.Minutes()))
 }

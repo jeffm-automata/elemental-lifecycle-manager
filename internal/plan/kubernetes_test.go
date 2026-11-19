@@ -18,6 +18,8 @@ limitations under the License.
 package plan
 
 import (
+	"time"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -101,6 +103,16 @@ var _ = Describe("Kubernetes plan tests", func() {
 			Expect(plan.Spec.Upgrade.Image).To(Equal(rke2UpgradeImage))
 		})
 
+		It("gives the upgrade job of a node enough time", func() {
+			Expect(plan.Spec.JobActiveDeadlineSecs).ToNot(BeNil())
+			Expect(*plan.Spec.JobActiveDeadlineSecs).To(Equal(int64(1800)))
+
+			By("leaving room for a drain that takes its full timeout")
+			timeout, err := time.ParseDuration(plan.Spec.Drain.Timeout.String())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(time.Duration(*plan.Spec.JobActiveDeadlineSecs) * time.Second).To(BeNumerically(">", timeout))
+		})
+
 		It("enables drain with correct settings", func() {
 			Expect(plan.Spec.Drain).ToNot(BeNil())
 			Expect(ptr.Deref(plan.Spec.Drain.DeleteEmptydirData, false)).To(BeTrue())
@@ -145,6 +157,16 @@ var _ = Describe("Kubernetes plan tests", func() {
 			expr := plan.Spec.NodeSelector.MatchExpressions[0]
 			Expect(expr.Key).To(Equal("node-role.kubernetes.io/control-plane"))
 			Expect(expr.Operator).To(Equal(metav1.LabelSelectorOpDoesNotExist))
+		})
+
+		It("gives the upgrade job of a node enough time", func() {
+			Expect(plan.Spec.JobActiveDeadlineSecs).ToNot(BeNil())
+			Expect(*plan.Spec.JobActiveDeadlineSecs).To(Equal(int64(1800)))
+
+			By("leaving room for a drain that takes its full timeout")
+			timeout, err := time.ParseDuration(plan.Spec.Drain.Timeout.String())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(time.Duration(*plan.Spec.JobActiveDeadlineSecs) * time.Second).To(BeNumerically(">", timeout))
 		})
 
 		It("enables drain with correct settings", func() {

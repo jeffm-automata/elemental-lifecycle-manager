@@ -35,6 +35,9 @@ const (
 	osControlPlaneBaseName = "elemental-os-control-plane"
 	osWorkerBaseName       = "elemental-os-worker"
 	osUpgradeShell         = "/bin/sh"
+	// osPrepareScript is the command of the prepare container of OS plans. The container has
+	// nothing to do, it only exists so that the OS image is pulled before the node is drained.
+	osPrepareScript = `echo "OS image is available on the node"`
 )
 
 //go:embed templates/os-upgrade.sh.tpl
@@ -72,6 +75,7 @@ func OSControlPlane(releaseName, osImage, osVersion, releaseVersion string, drai
 			},
 		},
 	}
+	p.Spec.Prepare = osPrepareContainer(osImage)
 	p.Spec.Upgrade = &upgradecattlev1.ContainerSpec{
 		Image:   osImage,
 		Command: []string{osUpgradeShell, "-c"},
@@ -102,12 +106,27 @@ func OSWorker(releaseName, osImage, osVersion, releaseVersion string, drain bool
 			},
 		},
 	}
+	p.Spec.Prepare = osPrepareContainer(osImage)
 	p.Spec.Upgrade = &upgradecattlev1.ContainerSpec{
 		Image:   osImage,
 		Command: []string{osUpgradeShell, "-c"},
 		Args:    []string{script},
 	}
 	return p, nil
+}
+
+// osPrepareContainer returns the prepare step of an OS plan.
+//
+// SUC runs the prepare container of a Plan before it cordons and drains the node, while the image
+// of the upgrade container is only pulled once the drain has finished. Running a no-op prepare container
+// from the OS image makes the node pull it while it still serves its workloads, and the upgrade
+// container then starts from the image that is already present.
+func osPrepareContainer(osImage string) *upgradecattlev1.ContainerSpec {
+	return &upgradecattlev1.ContainerSpec{
+		Image:   osImage,
+		Command: []string{osUpgradeShell, "-c"},
+		Args:    []string{osPrepareScript},
+	}
 }
 
 func parseUpgradeScript(osImage string) (string, error) {

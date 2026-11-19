@@ -88,6 +88,18 @@ The node of a failed workload was cordoned before its upgrade and **remains cord
 
 The Job of the failed workload and its Pods are kept for a limited time (15 minutes by default) by the System Upgrade Controller, inspect them before they are removed.
 
+LCM retries a failed SUC Plan up to 3 times:
+
+1. While the failed Job exists, the condition stays `Failed` and its message ends with `Retry <n> of 3 follows once the failed job has been removed`.
+2. Once the System Upgrade Controller has removed the failed Job, LCM requests the retry. The condition changes to `InProgress` with a message starting with `Retry <n> of 3 in progress after:`, followed by the failure that is being retried. A node that was upgraded before its workload failed, for example because it took too long to reboot, is recognized as upgraded by the retry and made schedulable again.
+3. If the retry fails as well, the condition goes back to `Failed`.
+
+After the third failed retry the message ends with `Giving up after 3 retries` and the upgrade stops until the cause is fixed. The retries are counted in the `lifecycle.suse.com/retries` annotation of the SUC Plan. To have LCM retry a SUC Plan that it gave up on, remove that annotation:
+
+```sh
+kubectl annotate plans.upgrade.cattle.io -n cattle-system <suc-plan-name> lifecycle.suse.com/retries-
+```
+
 ### Kubernetes Upgrade
 
 Condition type: `KubernetesUpgraded`

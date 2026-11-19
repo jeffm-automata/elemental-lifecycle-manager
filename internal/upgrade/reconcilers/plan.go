@@ -21,12 +21,16 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
+	upgradeapi "github.com/rancher/system-upgrade-controller/pkg/apis/upgrade.cattle.io"
 	upgradecattlev1 "github.com/rancher/system-upgrade-controller/pkg/apis/upgrade.cattle.io/v1"
 	"github.com/rancher/wrangler/v3/pkg/genericcondition"
 	lifecyclev1alpha1 "github.com/suse/elemental-lifecycle-manager/api/v1alpha1"
 	"github.com/suse/elemental-lifecycle-manager/internal/upgrade"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,6 +42,21 @@ import (
 // planReasonJobFailed is the reason that SUC sets on the 'Complete' condition
 // of a Plan when one of the jobs applying it has failed.
 const planReasonJobFailed = "JobFailed"
+
+const (
+	// MaxPlanRetries is the number of times that a SUC Plan with a failed job is retried before it is given up.
+	MaxPlanRetries = 3
+
+	// PlanRetriesAnnotation holds the number of times that a SUC Plan has been retried after a failed job.
+	// Removing the annotation from a Plan that has been given up makes it eligible for retries again.
+	PlanRetriesAnnotation = "lifecycle.suse.com/retries"
+
+	// PlanRetryRequestedAtAnnotation holds the time at which the last retry of a SUC Plan was requested.
+	PlanRetryRequestedAtAnnotation = "lifecycle.suse.com/retry-requested-at"
+
+	// planRetryGracePeriod is the time that SUC is given to start a job for a retry that has been requested.
+	planRetryGracePeriod = 2 * time.Minute
+)
 
 // PlanResult provides information about the current status of the SUC Plan as seen
 // in the upgrade process and the nodes that this plan relates to.
@@ -53,10 +72,13 @@ type PlanReconciler interface {
 
 type SUCPlanReconciler struct {
 	client.Client
+
+	// Now returns the current time.
+	Now func() time.Time
 }
 
 func NewSUCPlanReconciler(c client.Client) *SUCPlanReconciler {
-	return &SUCPlanReconciler{Client: c}
+	return &SUCPlanReconciler{Client: c, Now: time.Now}
 }
 
 // Reconcile attempts to retrieve the desired SUC plan, or create it if it is missing.
@@ -71,6 +93,10 @@ func (p *SUCPlanReconciler) Reconcile(ctx context.Context, desired *upgradecattl
 
 	switch result.Status.State {
 	case lifecyclev1alpha1.PlanComplete:
+		if err := p.forgetRetries(ctx, plan); err != nil {
+			return nil, fmt.Errorf("resetting retries of plan %q: %w", plan.Name, err)
+		}
+
 		nodes, err := p.listNodesForPlan(ctx, plan)
 		if err != nil {
 			return nil, fmt.Errorf("listing plan %q nodes: %w", plan.Name, err)
@@ -84,6 +110,10 @@ func (p *SUCPlanReconciler) Reconcile(ctx context.Context, desired *upgradecattl
 			return nil, fmt.Errorf("inspecting nodes of failed plan %q: %w", plan.Name, err)
 		}
 		result.Status.Message += note
+
+		if err := p.retryFailedPlan(ctx, plan, result.Status); err != nil {
+			return nil, fmt.Errorf("retrying failed plan %q: %w", plan.Name, err)
+		}
 	}
 
 	return result, nil
@@ -127,6 +157,91 @@ func (p *SUCPlanReconciler) listNodesForPlan(ctx context.Context, plan *upgradec
 	}
 
 	return nodes, nil
+}
+
+// retryFailedPlan decides what happens to a SUC Plan with a failed job and updates the given status of the Plan accordingly.
+//
+// SUC does not start another job for the node of a failed job by itself: it only looks at a Plan again when the Plan
+// changes. A retry is therefore requested by changing an annotation of the Plan, which also counts the retries. SUC keeps
+// a failed job for some time before it removes it, and a new job cannot be created while the failed one exists,
+// so the retry is requested once the failed job is gone. That leaves time to inspect the job and its pods.
+//
+// A Plan is retried MaxPlanRetries times. A job that failed for a passing reason, e.g. a node that took too long to reboot,
+// succeeds on a retry. A job that keeps failing needs a person, and retrying it for ever would only hide that.
+func (p *SUCPlanReconciler) retryFailedPlan(ctx context.Context, plan *upgradecattlev1.Plan, status *upgrade.PhaseStatus) error {
+	jobs := &batchv1.JobList{}
+	if err := p.List(ctx, jobs, client.InNamespace(plan.Namespace), client.MatchingLabels{upgradeapi.LabelPlan: plan.Name}); err != nil {
+		return fmt.Errorf("listing jobs: %w", err)
+	}
+
+	var failedJobs, otherJobs int
+	for i := range jobs.Items {
+		if isJobFailed(&jobs.Items[i]) {
+			failedJobs++
+		} else {
+			otherJobs++
+		}
+	}
+
+	retries, _ := strconv.Atoi(plan.Annotations[PlanRetriesAnnotation])
+	requestedAt, _ := time.Parse(time.RFC3339, plan.Annotations[PlanRetryRequestedAtAnnotation])
+	requested := !requestedAt.IsZero() && p.Now().Sub(requestedAt) < planRetryGracePeriod
+
+	switch {
+	case otherJobs > 0 || (failedJobs == 0 && requested):
+		// SUC only updates the Plan when the job of the retry finishes, until then the Plan shows the previous failure.
+		status.State = lifecyclev1alpha1.UpgradeInProgress
+		status.Message = fmt.Sprintf("Retry %d of %d in progress after: %s", retries, MaxPlanRetries, status.Message)
+	case retries >= MaxPlanRetries:
+		status.Message += fmt.Sprintf(". Giving up after %d retries", MaxPlanRetries)
+	case failedJobs > 0:
+		status.Message += fmt.Sprintf(". Retry %d of %d follows once the failed job has been removed", retries+1, MaxPlanRetries)
+	default:
+		retries++
+
+		patch := client.MergeFrom(plan.DeepCopy())
+		if plan.Annotations == nil {
+			plan.Annotations = map[string]string{}
+		}
+		plan.Annotations[PlanRetriesAnnotation] = strconv.Itoa(retries)
+		plan.Annotations[PlanRetryRequestedAtAnnotation] = p.Now().UTC().Format(time.RFC3339)
+		if err := p.Patch(ctx, plan, patch); err != nil {
+			return fmt.Errorf("requesting retry: %w", err)
+		}
+
+		log.FromContext(ctx).Info("Retrying SUC Plan after a failed job", "name", plan.Name, "retry", retries, "failure", status.Message)
+
+		status.State = lifecyclev1alpha1.UpgradeInProgress
+		status.Message = fmt.Sprintf("Retry %d of %d in progress after: %s", retries, MaxPlanRetries, status.Message)
+	}
+
+	return nil
+}
+
+// forgetRetries removes the record of the retries from a SUC Plan that has completed,
+// so that a failure on a node that joins the cluster later is retried in full again.
+func (p *SUCPlanReconciler) forgetRetries(ctx context.Context, plan *upgradecattlev1.Plan) error {
+	_, retried := plan.Annotations[PlanRetriesAnnotation]
+	_, requested := plan.Annotations[PlanRetryRequestedAtAnnotation]
+	if !retried && !requested {
+		return nil
+	}
+
+	patch := client.MergeFrom(plan.DeepCopy())
+	delete(plan.Annotations, PlanRetriesAnnotation)
+	delete(plan.Annotations, PlanRetryRequestedAtAnnotation)
+
+	return p.Patch(ctx, plan, patch)
+}
+
+// isJobFailed returns true if the given job has failed.
+func isJobFailed(job *batchv1.Job) bool {
+	for _, cond := range job.Status.Conditions {
+		if cond.Type == batchv1.JobFailed && cond.Status == corev1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }
 
 // describeFailedNodes describes the state in which the failed jobs of the given SUC Plan left their nodes.

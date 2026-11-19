@@ -113,7 +113,7 @@ func (r *KubernetesReconciler) Reconcile(ctx context.Context, config *upgrade.Co
 	}
 
 	// Reconcile each plan in the prepared list.
-	for _, p := range plans {
+	for i, p := range plans {
 		result, err := r.sucReconciler.Reconcile(ctx, p)
 		if err != nil {
 			return nil, fmt.Errorf("reconciling Kubernetes upgrade plan %q: %w", p.Name, err)
@@ -127,7 +127,9 @@ func (r *KubernetesReconciler) Reconcile(ctx context.Context, config *upgrade.Co
 		}
 
 		// Verify that the Kubernetes version of the nodes managed by this plan matches the target release version.
-		if !allNodesAtKubernetesVersion(result.Nodes, k8sConfig.Version) {
+		// A completed worker plan whose nodes are gone has nothing to verify. The control plane plan is the first.
+		workersGone := i > 0 && len(result.Nodes) == 0
+		if !workersGone && !allNodesAtKubernetesVersion(result.Nodes, k8sConfig.Version) {
 			return &upgrade.PhaseStatus{
 				State:   lifecyclev1alpha1.UpgradeInProgress,
 				Message: fmt.Sprintf("Plan %s completed, waiting for node upgrade verification", p.Name),
@@ -170,8 +172,16 @@ func (r *KubernetesReconciler) preparePlans(ctx context.Context, config *upgrade
 		return nil, fmt.Errorf("listing cluster nodes: %w", err)
 	}
 
-	if !isControlPlaneOnlyCluster(allNodes.Items) {
-		wkPlan := plan.KubernetesWorker(config.ReleaseNamespacedName.Name, config.ReleaseVersion, k8sConfig.Version, k8sConfig.DrainOpts.Worker)
+	wkPlan := plan.KubernetesWorker(config.ReleaseNamespacedName.Name, config.ReleaseVersion, k8sConfig.Version, k8sConfig.DrainOpts.Worker)
+
+	// A worker plan that has been created stays part of the phase when the cluster
+	// has no worker nodes at the moment, see the OS reconciler.
+	include, err := workerPlanRequired(ctx, r.Client, wkPlan, allNodes.Items)
+	if err != nil {
+		return nil, err
+	}
+
+	if include {
 		planList = append(planList, wkPlan)
 	}
 

@@ -20,12 +20,14 @@ package reconcilers_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	upgradecattlev1 "github.com/rancher/system-upgrade-controller/pkg/apis/upgrade.cattle.io/v1"
 	lifecyclev1alpha1 "github.com/suse/elemental-lifecycle-manager/api/v1alpha1"
+	"github.com/suse/elemental-lifecycle-manager/internal/plan"
 	"github.com/suse/elemental-lifecycle-manager/internal/upgrade"
 	"github.com/suse/elemental-lifecycle-manager/internal/upgrade/reconcilers"
 	"github.com/suse/elemental-lifecycle-manager/internal/upgrade/reconcilers/testutil"
@@ -320,6 +322,91 @@ var _ = Describe("KubernetesReconciler", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+			})
+		})
+
+		Context("with a worker plan whose worker nodes are gone", func() {
+			var planNames []string
+
+			BeforeEach(func() {
+				planNames = []string{}
+
+				mockPackagedHandler.GenerateSnapshotFn = func(ctx context.Context, config *upgrade.Config) (*reconcilers.PackagedComponentsSnapshot, error) {
+					return &reconcilers.PackagedComponentsSnapshot{
+						CreationTime:            time.Now(),
+						SourceKubernetesVersion: testK8sVersion,
+						Charts:                  []*reconcilers.PackagedComponentChartSnapshot{},
+					}, nil
+				}
+				mockPackagedHandler.ReconcileAvailabilityFn = func(ctx context.Context, targetVersion string, snapshot *reconcilers.PackagedComponentsSnapshot) (*upgrade.PhaseStatus, error) {
+					return &upgrade.PhaseStatus{
+						State:   lifecyclev1alpha1.K8sPackagedComponentsAvailable,
+						Message: testComponentsAvailable,
+					}, nil
+				}
+
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("cp1", true, testutil.WithVersion(testK8sVersion)))).To(Succeed())
+				workerPlan := plan.KubernetesWorker(config.ReleaseNamespacedName.Name, config.ReleaseVersion, config.Kubernetes.Version, false)
+				Expect(fakeClient.Create(ctx, workerPlan)).To(Succeed())
+			})
+
+			It("should not report success while the worker plan has not completed", func() {
+				mockPlanRec.ReconcileFn = func(ctx context.Context, desired *upgradecattlev1.Plan) (*reconcilers.PlanResult, error) {
+					planNames = append(planNames, desired.Name)
+					if strings.Contains(desired.Name, "worker") {
+						return &reconcilers.PlanResult{
+							Status: &upgrade.PhaseStatus{
+								State:   lifecyclev1alpha1.UpgradeFailed,
+								Message: "Plan failed: Job failed on Node worker1: DeadlineExceeded",
+							},
+						}, nil
+					}
+					return &reconcilers.PlanResult{
+						Status: &upgrade.PhaseStatus{State: lifecyclev1alpha1.PlanComplete, Message: testCompleteMsg},
+						Nodes:  []corev1.Node{*testutil.NewTestNode("cp1", true, testutil.WithVersion(testK8sVersion))},
+					}, nil
+				}
+
+				status, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(planNames).To(HaveLen(2))
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeFailed))
+			})
+
+			It("should succeed once the worker plan has completed without nodes", func() {
+				mockPlanRec.ReconcileFn = func(ctx context.Context, desired *upgradecattlev1.Plan) (*reconcilers.PlanResult, error) {
+					planNames = append(planNames, desired.Name)
+					result := &reconcilers.PlanResult{
+						Status: &upgrade.PhaseStatus{State: lifecyclev1alpha1.PlanComplete, Message: testCompleteMsg},
+					}
+					if !strings.Contains(desired.Name, "worker") {
+						result.Nodes = []corev1.Node{*testutil.NewTestNode("cp1", true, testutil.WithVersion(testK8sVersion))}
+					}
+					return result, nil
+				}
+
+				status, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(planNames).To(HaveLen(2))
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeSucceeded))
+			})
+
+			It("should still wait for the nodes of a completed control plane plan", func() {
+				mockPlanRec.ReconcileFn = func(ctx context.Context, desired *upgradecattlev1.Plan) (*reconcilers.PlanResult, error) {
+					planNames = append(planNames, desired.Name)
+					return &reconcilers.PlanResult{
+						Status: &upgrade.PhaseStatus{State: lifecyclev1alpha1.PlanComplete, Message: testCompleteMsg},
+					}, nil
+				}
+
+				status, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(planNames).To(HaveLen(1))
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+				Expect(status.Message).To(ContainSubstring("waiting for node upgrade verification"))
 			})
 		})
 

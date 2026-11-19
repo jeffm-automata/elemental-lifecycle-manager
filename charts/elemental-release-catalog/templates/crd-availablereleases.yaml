@@ -1,0 +1,179 @@
+{{- if .Values.crds.install }}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+    helm.sh/resource-policy: keep
+  name: availablereleases.lifecycle.suse.com
+spec:
+  group: lifecycle.suse.com
+  names:
+    categories:
+    - elemental
+    kind: AvailableRelease
+    listKind: AvailableReleaseList
+    plural: availablereleases
+    shortNames:
+    - avrel
+    singular: availablerelease
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.version
+      name: Version
+      type: string
+    - jsonPath: .spec.lineage
+      name: Lineage
+      type: string
+    - jsonPath: .spec.kubernetes.version
+      name: Kubernetes
+      type: string
+    - jsonPath: .spec.operatingSystem.version
+      name: OS
+      type: string
+    - jsonPath: .spec.source
+      name: Source
+      type: string
+    - jsonPath: .status.stale
+      name: Stale
+      type: boolean
+    - jsonPath: .status.discoveredAt
+      name: Found
+      type: date
+    - jsonPath: .spec.registry
+      name: Registry
+      priority: 1
+      type: string
+    - jsonPath: .spec.digest
+      name: Digest
+      priority: 1
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: AvailableRelease is one release found in a ReleaseSource. Read-only
+          for users.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              AvailableReleaseSpec states what the catalog read from one release manifest. It is written by the
+              catalog controller only; spec.registry and spec.version are the values to copy into a Release.
+            properties:
+              corePlatform:
+                description: CorePlatform is set for a solution release.
+                properties:
+                  image:
+                    description: Image is the reference of the core platform release
+                      manifest.
+                    type: string
+                  name:
+                    description: Name is the name the core platform manifest states.
+                    type: string
+                required:
+                - image
+                type: object
+              creationDate:
+                description: CreationDate as stated by the manifest.
+                type: string
+              digest:
+                description: Digest of the release manifest artifact the fields below
+                  were read from.
+                type: string
+              kubernetes:
+                description: Kubernetes of the release.
+                properties:
+                  image:
+                    description: Image is the Kubernetes artifact image reference.
+                    type: string
+                  version:
+                    description: Version as stated by the manifest, e.g. "v1.37.2+rke2r1".
+                    type: string
+                required:
+                - version
+                type: object
+              lineage:
+                description: |-
+                  Lineage is the name the release manifest states (metadata.name), e.g. "suse-core" or the
+                  name of a solution. A cluster can only move between releases of one lineage.
+                type: string
+              manifest:
+                description: 'Manifest is the reference of the release manifest pinned
+                  by digest: <registry>@<digest>.'
+                type: string
+              operatingSystem:
+                description: OperatingSystem of the release.
+                properties:
+                  image:
+                    description: Image is the operating system image reference (components.operatingSystem.image.base).
+                    type: string
+                  version:
+                    description: Version is the tag of that image.
+                    type: string
+                required:
+                - image
+                type: object
+              registry:
+                description: Registry is the OCI repository of the release manifest
+                  (Release.spec.registry).
+                type: string
+              source:
+                description: Source is the name of the ReleaseSource the release was
+                  found in.
+                type: string
+              version:
+                description: Version is the release version, the tag of the manifest
+                  (Release.spec.version).
+                type: string
+            required:
+            - digest
+            - kubernetes
+            - lineage
+            - manifest
+            - operatingSystem
+            - registry
+            - source
+            - version
+            type: object
+          status:
+            description: AvailableReleaseStatus is the observed state of an AvailableRelease.
+            properties:
+              discoveredAt:
+                description: DiscoveredAt is the time the catalog first read this
+                  manifest digest.
+                format: date-time
+                type: string
+              stale:
+                description: |-
+                  Stale is true when the last query of the source could not confirm that the release
+                  is still there: the entry is the last known one.
+                type: boolean
+            required:
+            - stale
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+{{- end }}

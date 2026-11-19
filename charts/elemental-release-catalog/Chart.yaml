@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v2
+name: elemental-release-catalog
+description: >-
+  Release catalog for Elemental: queries OCI repositories of release manifests (ReleaseSource) and
+  publishes the releases found there (AvailableRelease). Needs nothing but Kubernetes.
+type: application
+version: 0.1.0-e3p.1
+appVersion: "0.1.0-e3p.1"

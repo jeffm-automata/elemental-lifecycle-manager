@@ -1,0 +1,23 @@
+# Release catalog controller (cmd/catalog). Built on its own: it runs on a management cluster,
+# not next to the Lifecycle Manager on a workload cluster.
+FROM registry.suse.com/bci/golang:1.26 AS builder
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /workspace
+COPY go.mod go.mod
+COPY go.sum go.sum
+RUN go mod download
+
+# Copy the Go source (relies on .dockerignore to filter)
+COPY . .
+
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o release-catalog ./cmd/catalog
+
+FROM scratch
+WORKDIR /
+COPY --from=builder /etc/ssl/ca-bundle.pem /etc/ssl/ca-bundle.pem
+COPY --from=builder /workspace/release-catalog .
+USER 65532:65532
+
+ENTRYPOINT ["/release-catalog"]

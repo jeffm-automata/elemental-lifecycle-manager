@@ -1,0 +1,7 @@
+apiVersion: lifecycle.suse.com/v1alpha1
+kind: ReleaseSource
+metadata:
+  name: suse-core
+spec:
+  registry: registry.suse.com/beta/uc/rke2/rke2-manifest
+  interval: 5m

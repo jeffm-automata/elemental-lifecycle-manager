@@ -1,0 +1,11 @@
+{{- range $name, $spec := .Values.sources }}
+---
+apiVersion: lifecycle.suse.com/v1alpha1
+kind: ReleaseSource
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "catalog.labels" $ | nindent 4 }}
+spec:
+  {{- toYaml $spec | nindent 2 }}
+{{- end }}

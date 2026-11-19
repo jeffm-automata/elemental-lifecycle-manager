@@ -1,0 +1,63 @@
+replicaCount: 1
+
+image:
+  repository: registry.suse.com/elemental/elemental-release-catalog
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Install the two custom resource definitions with the chart. They are kept when the chart is
+# uninstalled (helm.sh/resource-policy: keep); delete them by hand to remove the catalog objects.
+crds:
+  install: true
+
+# ClusterRole "<fullname>-reader": get, list, watch on the catalog objects. Bind it to the users
+# who may see the catalog; set authenticated to true to bind it to every authenticated user.
+reader:
+  create: true
+  authenticated: false
+
+# ReleaseSource objects to create with the chart, by name. Example:
+#   sources:
+#     core:
+#       registry: registry.suse.com/beta/uc/rke2/rke2-manifest
+#       interval: 5m
+sources: {}
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+extraArgs: []
+extraEnv: []

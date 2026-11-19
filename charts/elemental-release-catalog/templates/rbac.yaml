@@ -1,0 +1,101 @@
+# What the controller may do. Cluster-wide: only its own two kinds. Secrets: read by name, in its
+# own namespace only (pull secrets of the sources).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "catalog.fullname" . }}-controller
+  labels:
+    {{- include "catalog.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["lifecycle.suse.com"]
+    resources: ["releasesources"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["lifecycle.suse.com"]
+    resources: ["releasesources/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["lifecycle.suse.com"]
+    resources: ["availablereleases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["lifecycle.suse.com"]
+    resources: ["availablereleases/status"]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "catalog.fullname" . }}-controller
+  labels:
+    {{- include "catalog.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "catalog.fullname" . }}-controller
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "catalog.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "catalog.fullname" . }}-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "catalog.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update"]
+  - apiGroups: ["", "events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "catalog.fullname" . }}-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "catalog.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "catalog.fullname" . }}-controller
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "catalog.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.reader.create }}
+---
+# Read access to the catalog. Bind this to the users who pick releases.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "catalog.fullname" . }}-reader
+  labels:
+    {{- include "catalog.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["lifecycle.suse.com"]
+    resources: ["availablereleases", "releasesources"]
+    verbs: ["get", "list", "watch"]
+{{- if .Values.reader.authenticated }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "catalog.fullname" . }}-reader-authenticated
+  labels:
+    {{- include "catalog.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "catalog.fullname" . }}-reader
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:authenticated
+{{- end }}
+{{- end }}

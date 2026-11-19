@@ -750,6 +750,46 @@ func TestReconcilePullSecretAndInvalidSource(t *testing.T) {
 	}
 }
 
+func TestReconcileFloatingTagsAreNotReleases(t *testing.T) {
+	f := newFakeRegistry(t)
+	old := coreManifest("v1.37.2+rke2r1", "16.1-76.43")
+	newest := coreManifest("v1.37.2+rke2r1", "16.1-77.8")
+	f.pushManifest(t, "1.37.2-20.3", old)
+	f.pushManifest(t, "1.37.2", old) // the floating tag, first on the older build
+	h := newHarness(t, newSource("core", f.repo()))
+	h.reconcile("core")
+	if rels := h.releases(); len(rels) != 1 || rels["core-1.37.2-20.3"].Spec.Version != "1.37.2-20.3" {
+		t.Fatalf("releases: %v", rels)
+	}
+
+	// A new build is published and the floating tag moves to it.
+	f.pushManifest(t, "1.37.2-26.3", newest)
+	f.pushManifest(t, "1.37.2", newest)
+	h.reconcile("core")
+	rels := h.releases()
+	if len(rels) != 2 || rels["core-1.37.2-26.3"].Spec.OperatingSystem.Version != "16.1-77.8" {
+		t.Fatalf("releases after the new build: %v", rels)
+	}
+	if _, floating := rels["core-1.37.2"]; floating {
+		t.Error("the floating tag was published as a release")
+	}
+	var reason string
+	for _, s := range h.source("core").Status.Skipped {
+		if s.Tag == "1.37.2" {
+			reason = s.Reason
+		}
+	}
+	if reason != "floating tag: same manifest as 1.37.2-26.3" {
+		t.Errorf("skip reason: %q", reason)
+	}
+	// A tag that is the only one for its manifest is a release, whatever its form.
+	f.pushManifest(t, "1.38.0", coreManifest("v1.38.0+rke2r1", "16.2-1.1"))
+	h.reconcile("core")
+	if _, ok := h.releases()["core-1.38.0"]; !ok {
+		t.Error("a plain version with its own manifest must be published")
+	}
+}
+
 func TestReconcileTwoSourcesDoNotTouchEachOther(t *testing.T) {
 	f := newFakeRegistry(t)
 	f.pushManifest(t, "1.37.2-20.3", coreManifest(k8s1372, "16.1-76.43"))

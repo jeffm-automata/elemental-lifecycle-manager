@@ -31,7 +31,9 @@ and identical to `config/crd/bases/`; Helm installs them once and does not updat
 - A new tag appears as an `AvailableRelease` at the next query. A tag removed from the repository is removed
   from the catalog. A tag moved to other content is updated.
 - Not published, and listed under `status.skipped` of the source: tags that are not versions (`latest`,
-  signatures), artifacts without a `release_manifest.yaml`, invalid manifests, and releases without
+  `1.37`, signatures), floating tags (a tag that points to the same manifest as a longer tag, such as
+  `1.37.2` next to `1.37.2-26.3`: a cluster set to it would record a version that every later build
+  compares lower than), artifacts without a `release_manifest.yaml`, invalid manifests, and releases without
   Kubernetes (operating system only: not a cluster version).
 - A solution release is resolved to the core platform release it pins: its lineage is the solution's name,
   its operating system and Kubernetes are the core platform's.

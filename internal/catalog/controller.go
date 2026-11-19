@@ -36,6 +36,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -148,9 +149,44 @@ func (r *SourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	failed := 0
 	seen := map[string]bool{}
 
+	// keepStale keeps the entry of a tag that could not be read, as the last known one.
+	keepStale := func(tag, objName string, cause error) error {
+		failed++
+		skipped = append(skipped, lifecyclev1alpha1.SkippedTag{Tag: tag, Reason: "could not be read: " + brief(cause.Error())})
+		if rel := existing[objName]; rel != nil {
+			seen[objName] = true
+			return r.setStale(ctx, rel, true)
+		}
+		return nil
+	}
+
+	// First the digest of every tag that names a version: tags that point to one manifest are one release.
+	digests := map[string]string{}
 	for _, tag := range tags {
 		if !IsReleaseTag(tag) {
 			skipped = append(skipped, lifecyclev1alpha1.SkippedTag{Tag: tag, Reason: "not a release version"})
+			continue
+		}
+		digestCtx, cancel := context.WithTimeout(ctx, releaseTimeout)
+		digest, derr := r.Registry.Digest(digestCtx, CleanRepository(src.Spec.Registry), tag, access)
+		cancel()
+		if derr != nil {
+			if serr := keepStale(tag, ReleaseName(src.Name, tag), derr); serr != nil {
+				return ctrl.Result{}, serr
+			}
+			continue
+		}
+		digests[tag] = digest
+	}
+	canonical := canonicalTags(digests)
+
+	for _, tag := range tags {
+		digest, ok := digests[tag]
+		if !ok {
+			continue
+		}
+		if c := canonical[digest]; c != tag {
+			skipped = append(skipped, lifecyclev1alpha1.SkippedTag{Tag: tag, Reason: "floating tag: same manifest as " + c})
 			continue
 		}
 		objName := ReleaseName(src.Name, tag)
@@ -160,7 +196,7 @@ func (r *SourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 
 		relCtx, cancel := context.WithTimeout(ctx, releaseTimeout)
-		err = r.syncRelease(relCtx, src, tag, objName, existing[objName], access)
+		err = r.syncRelease(relCtx, src, tag, objName, digest, existing[objName], access)
 		cancel()
 
 		switch {
@@ -172,14 +208,8 @@ func (r *SourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		case isAPIError(err):
 			return ctrl.Result{}, err
 		default:
-			// Could not be read: an entry known from before is kept and marked stale.
-			failed++
-			skipped = append(skipped, lifecyclev1alpha1.SkippedTag{Tag: tag, Reason: "could not be read: " + brief(err.Error())})
-			if rel := existing[objName]; rel != nil {
-				seen[objName] = true
-				if serr := r.setStale(ctx, rel, true); serr != nil {
-					return ctrl.Result{}, serr
-				}
+			if serr := keepStale(tag, objName, err); serr != nil {
+				return ctrl.Result{}, serr
 			}
 		}
 	}
@@ -253,16 +283,27 @@ func (r *SourceReconciler) access(ctx context.Context, src *lifecyclev1alpha1.Re
 	return access, nil
 }
 
+// canonicalTags picks, for every digest, the one tag that is published. A repository may carry
+// floating tags next to the full versions ("1.37.2" pointing to the newest "1.37.2-26.3"): the
+// longest tag is the full version, and the floating ones are not releases of their own. A cluster
+// set to a floating tag would record a version that every later build compares lower than.
+func canonicalTags(digests map[string]string) map[string]string {
+	out := map[string]string{}
+	for tag, digest := range digests {
+		best, ok := out[digest]
+		if !ok || len(tag) > len(best) || (len(tag) == len(best) && tag < best) {
+			out[digest] = tag
+		}
+	}
+	return out
+}
+
 // syncRelease makes the AvailableRelease of one tag match the registry. The manifest is only
 // downloaded when the digest of the tag is not the one already published.
 func (r *SourceReconciler) syncRelease(ctx context.Context, src *lifecyclev1alpha1.ReleaseSource,
-	tag, objName string, current *lifecyclev1alpha1.AvailableRelease, access Access) error {
+	tag, objName, digest string, current *lifecyclev1alpha1.AvailableRelease, access Access) error {
 	repository := CleanRepository(src.Spec.Registry)
 
-	digest, err := r.Registry.Digest(ctx, repository, tag, access)
-	if err != nil {
-		return err
-	}
 	if current != nil && current.Spec.Digest == digest && current.Spec.Registry == repository {
 		return r.setStale(ctx, current, false)
 	}
@@ -363,6 +404,8 @@ func (r *SourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("releasesource").
+		// Sources are independent: a large or slow repository must not hold up the others.
+		WithOptions(controller.Options{MaxConcurrentReconciles: 4}).
 		For(&lifecyclev1alpha1.ReleaseSource{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Owns(&lifecyclev1alpha1.AvailableRelease{}, builder.WithPredicates(deletedOnly)).
 		Complete(r)

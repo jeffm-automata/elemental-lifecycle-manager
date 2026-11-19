@@ -157,6 +157,87 @@ var _ = Describe("System Upgrade Controller ownership", func() {
 		Expect(runtimeCharts).To(HaveKey(sucChartName))
 	})
 
+	Describe("the HelmChart resource that installed Elemental's chart", func() {
+		const ownerAnnotation = "helmcharts.cattle.io/managed-by"
+
+		sucHelmChart := func(annotations map[string]string) *helmv1.HelmChart {
+			return &helmv1.HelmChart{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: sucChartName, Namespace: reconcilers.HelmChartNamespace, Annotations: annotations,
+				},
+				Spec: helmv1.HelmChartSpec{Chart: sucChartName, Version: "109.0.2", TargetNamespace: rancherNamespace},
+			}
+		}
+
+		stored := func() *helmv1.HelmChart {
+			GinkgoHelper()
+			chart := &helmv1.HelmChart{}
+			Expect(k8sClient.Get(sucCtx, client.ObjectKey{
+				Name: sucChartName, Namespace: reconcilers.HelmChartNamespace,
+			}, chart)).To(Succeed())
+			return chart
+		}
+
+		It("is taken away from the Helm Controller when Rancher manages the cluster", func() {
+			create(clusterAgent())
+			create(sucHelmChart(map[string]string{ownerAnnotation: "helm-controller"}))
+
+			Expect(reconciler.handleSUCOwner(sucCtx, manifest, runtimeCharts)).To(Succeed())
+
+			chart := stored()
+			Expect(chart.Annotations).To(HaveKeyWithValue(helmChartUnmanagedAnnotation, "true"))
+			Expect(chart.Annotations).To(HaveKeyWithValue(sucOwnerAnnotation, sucOwnerRancher))
+			Expect(chart.Annotations).To(HaveKeyWithValue(ownerAnnotation, "helm-controller"))
+			Expect(chart.Spec.Version).To(Equal("109.0.2"))
+			Expect(chart.DeletionTimestamp).To(BeNil())
+
+			By("leaving it alone on the next reconciliation")
+			generation, resourceVersion := chart.Generation, chart.ResourceVersion
+			Expect(reconciler.handleSUCOwner(sucCtx, manifest, runtimeCharts)).To(Succeed())
+			chart = stored()
+			Expect(chart.Generation).To(Equal(generation))
+			Expect(chart.ResourceVersion).To(Equal(resourceVersion))
+		})
+
+		It("is left with the Helm Controller when there is no trace of Rancher", func() {
+			create(sucHelmChart(nil))
+
+			Expect(reconciler.handleSUCOwner(sucCtx, manifest, runtimeCharts)).To(Succeed())
+
+			Expect(stored().Annotations).NotTo(HaveKey(helmChartUnmanagedAnnotation))
+			Expect(stored().Annotations).NotTo(HaveKey(sucOwnerAnnotation))
+		})
+
+		It("is given back to the Helm Controller once Rancher is gone", func() {
+			agent := clusterAgent()
+			create(agent)
+			create(sucHelmChart(nil))
+			Expect(reconciler.handleSUCOwner(sucCtx, manifest, runtimeCharts)).To(Succeed())
+			Expect(stored().Annotations).To(HaveKey(helmChartUnmanagedAnnotation))
+
+			Expect(k8sClient.Delete(sucCtx, agent)).To(Succeed())
+			Expect(reconciler.handleSUCOwner(sucCtx, manifest, runtimeCharts)).To(Succeed())
+
+			Expect(stored().Annotations).NotTo(HaveKey(helmChartUnmanagedAnnotation))
+			Expect(stored().Annotations).NotTo(HaveKey(sucOwnerAnnotation))
+		})
+
+		It("is not given back when somebody else marked it as unmanaged", func() {
+			create(sucHelmChart(map[string]string{helmChartUnmanagedAnnotation: "true"}))
+
+			Expect(reconciler.handleSUCOwner(sucCtx, manifest, runtimeCharts)).To(Succeed())
+
+			Expect(stored().Annotations).To(HaveKeyWithValue(helmChartUnmanagedAnnotation, "true"))
+		})
+
+		It("is not required to exist", func() {
+			create(clusterAgent())
+
+			Expect(reconciler.handleSUCOwner(sucCtx, manifest, runtimeCharts)).To(Succeed())
+			Expect(runtimeCharts).NotTo(HaveKey(sucChartName))
+		})
+	})
+
 	It("copes with a release manifest without Helm charts", func() {
 		create(clusterAgent())
 		manifest.CorePlatform.Components.Helm = nil

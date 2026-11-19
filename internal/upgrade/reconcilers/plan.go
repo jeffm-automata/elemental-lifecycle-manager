@@ -32,6 +32,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+// planReasonJobFailed is the reason that SUC sets on the 'Complete' condition
+// of a Plan when one of the jobs applying it has failed.
+const planReasonJobFailed = "JobFailed"
+
 // PlanResult provides information about the current status of the SUC Plan as seen
 // in the upgrade process and the nodes that this plan relates to.
 type PlanResult struct {
@@ -129,7 +133,9 @@ func parsePhaseStatusFromPlan(p *upgradecattlev1.Plan) *upgrade.PhaseStatus {
 					Message: fmt.Sprintf("Plan %s execution completed successfully", p.Name),
 				}
 			}
-			if cond.Status == corev1.ConditionFalse && cond.Reason != "" {
+			// SUC also uses the reason of an incomplete Plan to tell how far it got with it,
+			// e.g. "Resolved" or "SyncJob". Only a failed job is a failure of the Plan.
+			if cond.Status == corev1.ConditionFalse && cond.Reason == planReasonJobFailed {
 				return &upgrade.PhaseStatus{
 					State:   lifecyclev1alpha1.UpgradeFailed,
 					Message: fmt.Sprintf("Plan %s failed: %s", p.Name, cond.Message),

@@ -41,7 +41,9 @@ This phase happens in two stages:
 1. Kubernetes version upgrade
 2. Kubernetes packaged components upgrade validation
 
-For the Kubernetes version upgrade, LCM proceeds to create [SUC Plans](https://github.com/rancher/system-upgrade-controller/tree/master#api-documentation) for the `control-plane` and `worker` node upgrades. These plans specify the operations that each SUC created workload must perform, as well as the nodes on which they should be applied. 
+If all nodes of the cluster already run the Kubernetes version of the desired release, and no `SUC Plans` for that version exist, LCM does not create any. No upgrade workloads are scheduled and no node is cordoned or drained; once all nodes are ready and schedulable, LCM proceeds directly with the packaged components validation. This is the case when a release changes other components but keeps the Kubernetes version.
+
+Otherwise, for the Kubernetes version upgrade, LCM proceeds to create [SUC Plans](https://github.com/rancher/system-upgrade-controller/tree/master#api-documentation) for the `control-plane` and `worker` node upgrades. These plans specify the operations that each SUC created workload must perform, as well as the nodes on which they should be applied. 
 
 LCM deploys the aforementioned `SUC Plans` in **sequence**, where the `worker` node plan is **only** deployed if the `control-plane` node plan has been marked as completed, signaling that all `control-plane` nodes are successfully upgraded.
 

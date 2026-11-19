@@ -26,6 +26,7 @@ import (
 	. "github.com/onsi/gomega"
 	upgradecattlev1 "github.com/rancher/system-upgrade-controller/pkg/apis/upgrade.cattle.io/v1"
 	lifecyclev1alpha1 "github.com/suse/elemental-lifecycle-manager/api/v1alpha1"
+	"github.com/suse/elemental-lifecycle-manager/internal/plan"
 	"github.com/suse/elemental-lifecycle-manager/internal/upgrade"
 	"github.com/suse/elemental-lifecycle-manager/internal/upgrade/reconcilers"
 	"github.com/suse/elemental-lifecycle-manager/internal/upgrade/reconcilers/testutil"
@@ -36,6 +37,7 @@ import (
 
 const (
 	testK8sVersion          = "v1.30.0"
+	testOldK8sVersion       = "v1.29.0"
 	testCompleteMsg         = "Complete"
 	testComponentsAvailable = "Components available"
 )
@@ -158,11 +160,12 @@ var _ = Describe("KubernetesReconciler", func() {
 					}, nil
 				}
 
-				cp := testutil.NewTestNode("cp1", true, testutil.WithVersion("v1.30.0"))
-				Expect(fakeClient.Create(ctx, cp)).To(Succeed())
+				// The cluster starts on an older version, the plans report the upgraded nodes.
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("cp1", true, testutil.WithVersion(testOldK8sVersion)))).To(Succeed())
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("worker1", false, testutil.WithVersion(testOldK8sVersion)))).To(Succeed())
 
+				cp := testutil.NewTestNode("cp1", true, testutil.WithVersion("v1.30.0"))
 				worker := testutil.NewTestNode("worker1", false, testutil.WithVersion("v1.30.0"))
-				Expect(fakeClient.Create(ctx, worker)).To(Succeed())
 
 				mockPlanRec.ReconcileFn = func(ctx context.Context, desired *upgradecattlev1.Plan) (*reconcilers.PlanResult, error) {
 					planNames = append(planNames, desired.Name)
@@ -197,10 +200,10 @@ var _ = Describe("KubernetesReconciler", func() {
 					}, nil
 				}
 
-				cp := testutil.NewTestNode("cp1", true)
+				cp := testutil.NewTestNode("cp1", true, testutil.WithVersion(testOldK8sVersion))
 				Expect(fakeClient.Create(ctx, cp)).To(Succeed())
 
-				worker := testutil.NewTestNode("worker1", false)
+				worker := testutil.NewTestNode("worker1", false, testutil.WithVersion(testOldK8sVersion))
 				Expect(fakeClient.Create(ctx, worker)).To(Succeed())
 
 				callCount := 0
@@ -320,6 +323,142 @@ var _ = Describe("KubernetesReconciler", func() {
 
 				Expect(err).NotTo(HaveOccurred())
 				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+			})
+		})
+
+		Context("nodes already at the target version", func() {
+			var planNames []string
+
+			BeforeEach(func() {
+				planNames = []string{}
+
+				mockPackagedHandler.GenerateSnapshotFn = func(ctx context.Context, config *upgrade.Config) (*reconcilers.PackagedComponentsSnapshot, error) {
+					return &reconcilers.PackagedComponentsSnapshot{
+						CreationTime:            time.Now(),
+						SourceKubernetesVersion: testK8sVersion,
+						Charts:                  []*reconcilers.PackagedComponentChartSnapshot{},
+					}, nil
+				}
+
+				mockPackagedHandler.ReconcileAvailabilityFn = func(ctx context.Context, targetVersion string, snapshot *reconcilers.PackagedComponentsSnapshot) (*upgrade.PhaseStatus, error) {
+					return &upgrade.PhaseStatus{
+						State:   lifecyclev1alpha1.K8sPackagedComponentsAvailable,
+						Message: testComponentsAvailable,
+					}, nil
+				}
+
+				mockPlanRec.ReconcileFn = func(ctx context.Context, desired *upgradecattlev1.Plan) (*reconcilers.PlanResult, error) {
+					planNames = append(planNames, desired.Name)
+
+					return &reconcilers.PlanResult{
+						Status: &upgrade.PhaseStatus{
+							State:   lifecyclev1alpha1.PlanComplete,
+							Message: testCompleteMsg,
+						},
+						Nodes: []corev1.Node{*testutil.NewTestNode("upgraded", true, testutil.WithVersion(testK8sVersion))},
+					}, nil
+				}
+			})
+
+			It("should not reconcile any plan when all nodes run the target version", func() {
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("cp1", true, testutil.WithVersion(testK8sVersion)))).To(Succeed())
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("worker1", false, testutil.WithVersion(testK8sVersion)))).To(Succeed())
+
+				availabilityChecked := false
+				mockPackagedHandler.ReconcileAvailabilityFn = func(ctx context.Context, targetVersion string, snapshot *reconcilers.PackagedComponentsSnapshot) (*upgrade.PhaseStatus, error) {
+					availabilityChecked = true
+					return &upgrade.PhaseStatus{
+						State:   lifecyclev1alpha1.K8sPackagedComponentsAvailable,
+						Message: testComponentsAvailable,
+					}, nil
+				}
+
+				status, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeSucceeded))
+				Expect(planNames).To(BeEmpty())
+				Expect(availabilityChecked).To(BeTrue())
+			})
+
+			It("should match the target version regardless of the 'v' prefix", func() {
+				config.Kubernetes.Version = "1.30.0"
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("cp1", true, testutil.WithVersion(testK8sVersion)))).To(Succeed())
+
+				status, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeSucceeded))
+				Expect(planNames).To(BeEmpty())
+			})
+
+			It("should reconcile all plans when a single node runs another version", func() {
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("cp1", true, testutil.WithVersion(testK8sVersion)))).To(Succeed())
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("worker1", false, testutil.WithVersion(testK8sVersion)))).To(Succeed())
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("worker2", false, testutil.WithVersion(testOldK8sVersion)))).To(Succeed())
+
+				status, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeSucceeded))
+				Expect(planNames).To(HaveLen(2))
+				Expect(planNames[0]).To(ContainSubstring("control-plane"))
+				Expect(planNames[1]).To(ContainSubstring("worker"))
+			})
+
+			It("should wait without plans for a node at the target version that is not ready", func() {
+				node := testutil.NewTestNode("cp1", true, testutil.WithVersion(testK8sVersion))
+				node.Status.Conditions = []corev1.NodeCondition{
+					{
+						Type:   corev1.NodeReady,
+						Status: corev1.ConditionFalse,
+					},
+				}
+				Expect(fakeClient.Create(ctx, node)).To(Succeed())
+
+				status, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+				Expect(status.Message).To(ContainSubstring("waiting for them to be ready and schedulable"))
+				Expect(planNames).To(BeEmpty())
+			})
+
+			It("should wait without plans for a node at the target version that is still cordoned", func() {
+				// The node cache can lag behind the OS plan that has just uncordoned its last node.
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("cp1", true, testutil.WithVersion(testK8sVersion)))).To(Succeed())
+				worker := testutil.NewTestNode("worker1", false, testutil.WithVersion(testK8sVersion))
+				worker.Spec.Unschedulable = true
+				Expect(fakeClient.Create(ctx, worker)).To(Succeed())
+
+				status, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+				Expect(planNames).To(BeEmpty())
+
+				worker.Spec.Unschedulable = false
+				Expect(fakeClient.Update(ctx, worker)).To(Succeed())
+
+				status, err = reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeSucceeded))
+				Expect(planNames).To(BeEmpty())
+			})
+
+			It("should keep reconciling plans that already exist", func() {
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("cp1", true, testutil.WithVersion(testK8sVersion)))).To(Succeed())
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("worker1", false, testutil.WithVersion(testK8sVersion)))).To(Succeed())
+
+				existing := plan.KubernetesWorker(config.ReleaseNamespacedName.Name, config.ReleaseVersion, config.Kubernetes.Version, false)
+				Expect(fakeClient.Create(ctx, existing)).To(Succeed())
+
+				status, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeSucceeded))
+				Expect(planNames).To(HaveLen(2))
 			})
 		})
 

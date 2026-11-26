@@ -38,7 +38,8 @@ if [ -z "$RKE2_BIN_PATH" ]; then
         echo "ERROR: expected one running rke2 process on this node, found: '$RKE2_PID'"
         exit 1
     fi
-    RKE2_BIN_PATH=$(tr '\0' '\n' < "$HOST/proc/$RKE2_PID/cmdline" | head -n 1)
+    # rke2 rewrites its command line: the path and the arguments may be one string, separated by spaces.
+    RKE2_BIN_PATH=$(tr '\0' '\n' < "$HOST/proc/$RKE2_PID/cmdline" | awk 'NR==1 {print $1}')
 fi
 
 TARGET_BIN="$HOST$RKE2_BIN_PATH"

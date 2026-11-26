@@ -171,6 +171,38 @@ var _ = Describe("OS plans that upgrade Kubernetes in the same pass", func() {
 	}
 
 	Describe("Prepare step", func() {
+		DescribeTable("finds the binary of the running rke2 process",
+			func(cmdline string) {
+				host := newHost("")
+				Expect(os.MkdirAll(filepath.Join(host, "proc", "4242"), 0o755)).To(Succeed())
+				Expect(os.WriteFile(filepath.Join(host, "proc", "4242", "cmdline"), []byte(cmdline), 0o444)).To(Succeed())
+
+				script, err := parseKubernetesStageScript(osImage, k8sVersion, false)
+				Expect(err).ToNot(HaveOccurred())
+
+				// The process list as the image of the Kubernetes upgrade prints it: the PID comes first.
+				tools := GinkgoT().TempDir()
+				ps := "#!/bin/sh\necho 'PID   USER     TIME  COMMAND'\necho '    1 root      0:03 /usr/lib/systemd/systemd'\necho ' 4242 root      1:07 /opt/rke2/bin/rke2 server'\n"
+				Expect(os.WriteFile(filepath.Join(tools, "ps"), []byte(ps), 0o755)).To(Succeed())
+				Expect(os.WriteFile(filepath.Join(tools, "rke2-new"), []byte(newBinary), 0o755)).To(Succeed())
+
+				cmd := exec.Command(osUpgradeShell, "-c", script)
+				cmd.Env = []string{
+					"HOST=" + host,
+					"NEW_BINARY=" + filepath.Join(tools, "rke2-new"),
+					"PATH=" + tools + string(os.PathListSeparator) + os.Getenv("PATH"),
+				}
+				out, err := cmd.CombinedOutput()
+				Expect(err).ToNot(HaveOccurred(), string(out))
+
+				Expect(read(filepath.Join(host, binPath+".elemental-staged"))).To(Equal(newBinary))
+				Expect(read(filepath.Join(host, "run", "elemental-onepass"))).To(HavePrefix("/opt/rke2/bin/rke2 "))
+			},
+			// rke2 rewrites its command line to one string, padded with NUL bytes.
+			Entry("when the command line is one string", "/opt/rke2/bin/rke2 server\x00\x00\x00\x00"),
+			Entry("when the arguments of the command line are separated by NUL bytes", "/opt/rke2/bin/rke2\x00server\x00"),
+		)
+
 		It("puts the new binary next to the one in use and changes nothing else", func() {
 			host := newHost("")
 			out, err := runStage(host, newBinary, false, "")

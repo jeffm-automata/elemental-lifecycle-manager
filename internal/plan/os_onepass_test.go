@@ -210,7 +210,7 @@ var _ = Describe("OS plans that upgrade Kubernetes in the same pass", func() {
 
 			Expect(read(filepath.Join(host, binPath))).To(Equal(oldBinary))
 			Expect(read(filepath.Join(host, binPath+".elemental-staged"))).To(Equal(newBinary))
-			Expect(read(filepath.Join(host, "run", "elemental-onepass"))).To(MatchRegexp(`^/opt/rke2/bin/rke2 [0-9a-f]{64} v1\.37\.2\+rke2r1\n$`))
+			Expect(read(filepath.Join(host, "run", "elemental-onepass"))).To(Equal(fmt.Sprintf("/opt/rke2/bin/rke2 %d v1.37.2+rke2r1\n", len(newBinary))))
 			Expect(out).To(ContainSubstring("is staged"))
 		})
 

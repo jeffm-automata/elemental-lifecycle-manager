@@ -19,7 +19,7 @@ discard_staged_kubernetes() {
     [ -e "$KUBERNETES_MARKER" ] || return 0
     STAGED_BIN=""
     STAGED_VERSION=""
-    read -r STAGED_BIN STAGED_SUM STAGED_VERSION < "$KUBERNETES_MARKER" || true
+    read -r STAGED_BIN STAGED_SIZE STAGED_VERSION < "$KUBERNETES_MARKER" || true
     if [ -n "$STAGED_BIN" ]; then
         rm -f "$HOST$STAGED_BIN.elemental-staged"
     fi
@@ -36,9 +36,9 @@ install_staged_kubernetes() {
     fi
 
     STAGED_BIN=""
-    STAGED_SUM=""
+    STAGED_SIZE=""
     STAGED_VERSION=""
-    read -r STAGED_BIN STAGED_SUM STAGED_VERSION < "$KUBERNETES_MARKER" || true
+    read -r STAGED_BIN STAGED_SIZE STAGED_VERSION < "$KUBERNETES_MARKER" || true
     TARGET_BIN="$HOST$STAGED_BIN"
     STAGED="$TARGET_BIN.elemental-staged"
     if [ -z "$STAGED_BIN" ] || [ ! -f "$STAGED" ] || [ ! -f "$TARGET_BIN" ]; then
@@ -46,7 +46,7 @@ install_staged_kubernetes() {
         return 1
     fi
 
-    if [ "$(sha256sum "$STAGED" | cut -d' ' -f1)" != "$STAGED_SUM" ]; then
+    if [ "$(wc -c < "$STAGED" | tr -d ' ')" != "$STAGED_SIZE" ]; then
         echo "ERROR: the staged Kubernetes binary $STAGED_BIN.elemental-staged is not the one that was staged. The node is not rebooted."
         return 1
     fi

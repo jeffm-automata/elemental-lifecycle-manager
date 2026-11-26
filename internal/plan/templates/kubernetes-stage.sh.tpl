@@ -15,11 +15,7 @@ OS_IMAGE="{{ .OSImage }}"
 # The image of this step is not the operating system image, so the node is asked to pull that image here:
 # it should be present before the node is cordoned. The upgrade step pulls it if this did not work.
 pull_os_image() {
-    # The path may be a link that only resolves on the node itself.
-    if ! chroot "$HOST" "$CRICTL" --version >/dev/null 2>&1; then
-        echo "No crictl at $CRICTL on the node. The upgrade step pulls the OS image."
-        return 0
-    fi
+    # The path may be a link that only resolves on the node itself, so it is not looked at from here.
     if chroot "$HOST" "$CRICTL" --runtime-endpoint unix:///run/k3s/containerd/containerd.sock pull "$OS_IMAGE" >/dev/null 2>&1; then
         echo "OS image is available on the node"
     else
@@ -52,16 +48,19 @@ fi
 # Nothing that an earlier attempt staged is used.
 rm -f "$KUBERNETES_MARKER" "$STAGED" "$STAGED.tmp"
 
-NEW_SUM=$(sha256sum "$NEW_BINARY" | awk '{print $1}')
-CURRENT_SUM=$(sha256sum "$TARGET_BIN" | awk '{print $1}')
-if [ "$NEW_SUM" = "$CURRENT_SUM" ]; then
+# The binaries are compared by the version and commit they report, not by a checksum: this step runs on a node that
+# still serves, often while another control plane node restarts, and a checksum of both binaries has been seen to
+# take three minutes there.
+NEW_VERSION=$("$NEW_BINARY" -v | head -n 1)
+CURRENT_VERSION=$("$TARGET_BIN" -v | head -n 1)
+if [ -n "$NEW_VERSION" ] && [ "$NEW_VERSION" = "$CURRENT_VERSION" ]; then
     echo "The node already has the rke2 binary of $KUBERNETES_VERSION. Nothing is staged."
     pull_os_image
     exit 0
 fi
 
-NEW_NUMBER=$(version_number "$("$NEW_BINARY" -v | head -n 1)")
-CURRENT_NUMBER=$(version_number "$("$TARGET_BIN" -v | head -n 1)")
+NEW_NUMBER=$(version_number "$NEW_VERSION")
+CURRENT_NUMBER=$(version_number "$CURRENT_VERSION")
 if [ -n "$NEW_NUMBER" ] && [ -n "$CURRENT_NUMBER" ] && [ "$CURRENT_NUMBER" -gt "$NEW_NUMBER" ]; then
     echo "ERROR: the node runs a newer rke2 than $KUBERNETES_VERSION"
     exit 1
@@ -92,10 +91,16 @@ CONTEXT=$(getfilecon "$TARGET_BIN" 2>/dev/null | awk '{print $2}' || true)
 if [ -n "$CONTEXT" ]; then
     setfilecon "$CONTEXT" "$STAGED.tmp"
 fi
+NEW_SIZE=$(wc -c < "$NEW_BINARY" | tr -d ' ')
+if [ "$(wc -c < "$STAGED.tmp" | tr -d ' ')" != "$NEW_SIZE" ]; then
+    echo "ERROR: the copy of the rke2 binary is not complete"
+    rm -f "$STAGED.tmp"
+    exit 1
+fi
 mv -f "$STAGED.tmp" "$STAGED"
 
 mkdir -p "$(dirname "$KUBERNETES_MARKER")"
-echo "$RKE2_BIN_PATH $NEW_SUM $KUBERNETES_VERSION" > "$KUBERNETES_MARKER"
+echo "$RKE2_BIN_PATH $NEW_SIZE $KUBERNETES_VERSION" > "$KUBERNETES_MARKER"
 echo "Kubernetes $KUBERNETES_VERSION is staged at $RKE2_BIN_PATH.elemental-staged"
 
 pull_os_image

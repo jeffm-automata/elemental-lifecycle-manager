@@ -71,6 +71,11 @@ func (r *OSReconciler) Reconcile(ctx context.Context, config *upgrade.Config) (*
 		"version", osConfig.Version,
 		"release", config.ReleaseNamespacedName.Name)
 
+	// Let the nodes pull the OS image while they wait for their turn. The upgrade does not depend on the outcome.
+	if err := r.ensurePrePull(ctx, config); err != nil {
+		return nil, fmt.Errorf("pulling the OS image in advance: %w", err)
+	}
+
 	// prepare an ordered list of SUC Plans for the different node types of the cluster.
 	plans, nodes, err := r.preparePlans(ctx, config)
 	if err != nil {
@@ -115,6 +120,38 @@ func (r *OSReconciler) Reconcile(ctx context.Context, config *upgrade.Config) (*
 		State:   lifecyclev1alpha1.UpgradeSucceeded,
 		Message: "All nodes upgraded successfully",
 	}, nil
+}
+
+// ensurePrePull makes sure that the SUC Plan which pulls the OS image on the nodes in advance exists.
+//
+// The Plan is created together with the first upgrade Plan and not again once the upgrade Plans exist, so that
+// a Plan that someone removed stays removed. Its status is not looked at: a node on which the pull in advance
+// did not work pulls the image in the prepare step of its upgrade job, as it would without this Plan.
+func (r *OSReconciler) ensurePrePull(ctx context.Context, config *upgrade.Config) error {
+	osConfig := config.OS
+	releaseName := config.ReleaseNamespacedName.Name
+
+	cpPlan, err := plan.OSControlPlane(releaseName, osConfig.Image, osConfig.Version, config.ReleaseVersion, osConfig.DrainOpts.ControlPlane)
+	if err != nil {
+		return fmt.Errorf("generating OS control-plane plan: %w", err)
+	}
+
+	err = r.Get(ctx, client.ObjectKeyFromObject(cpPlan), &upgradecattlev1.Plan{})
+	if err == nil {
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("retrieving plan %q: %w", cpPlan.Name, err)
+	}
+
+	prePull := plan.OSPrePull(releaseName, osConfig.Image, osConfig.Version, config.ReleaseVersion)
+	if err := r.Create(ctx, prePull); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("creating plan %q: %w", prePull.Name, err)
+	}
+
+	log.FromContext(ctx).Info("Pulling the OS image on all nodes in advance", "plan", prePull.Name, "image", osConfig.Image)
+
+	return nil
 }
 
 // hasHighlyAvailableControlPlane reports whether the cluster has more than one control plane node.

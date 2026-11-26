@@ -420,6 +420,71 @@ var _ = Describe("OSReconciler", func() {
 			})
 		})
 
+		Context("pulling the OS image in advance", func() {
+			const prePullName = "elemental-os-prepull-v1-0-0"
+
+			BeforeEach(func() {
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("cp1", true))).To(Succeed())
+				Expect(fakeClient.Create(ctx, testutil.NewTestNode("worker1", false))).To(Succeed())
+
+				mockPlanRec.ReconcileFn = func(ctx context.Context, desired *upgradecattlev1.Plan) (*reconcilers.PlanResult, error) {
+					planReconcileCnt++
+					return &reconcilers.PlanResult{
+						Status: &upgrade.PhaseStatus{State: lifecyclev1alpha1.UpgradeInProgress, Message: "in progress"},
+						Nodes:  []corev1.Node{},
+					}, nil
+				}
+			})
+
+			prePullPlans := func() []string {
+				plans := &upgradecattlev1.PlanList{}
+				Expect(fakeClient.List(ctx, plans, client.InNamespace(plan.Namespace))).To(Succeed())
+				var names []string
+				for _, p := range plans.Items {
+					if strings.Contains(p.Name, "prepull") {
+						names = append(names, p.Name)
+					}
+				}
+				return names
+			}
+
+			It("should create the pre-pull plan when the upgrade starts, without waiting for it", func() {
+				status, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(prePullPlans()).To(Equal([]string{prePullName}))
+				// The pre-pull plan is not handed to the plan reconciler: its status is of no consequence.
+				Expect(planReconcileCnt).To(Equal(1))
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+
+				prePull := &upgradecattlev1.Plan{}
+				Expect(fakeClient.Get(ctx, client.ObjectKey{Namespace: plan.Namespace, Name: prePullName}, prePull)).To(Succeed())
+				Expect(prePull.Spec.Cordon).To(BeFalse())
+				Expect(prePull.Spec.Drain).To(BeNil())
+				Expect(prePull.Spec.Upgrade.Image).To(Equal(config.OS.Image))
+			})
+
+			It("should tolerate a pre-pull plan that already exists", func() {
+				_, err := reconciler.Reconcile(ctx, config)
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = reconciler.Reconcile(ctx, config)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(prePullPlans()).To(Equal([]string{prePullName}))
+			})
+
+			It("should not create the pre-pull plan again once the control-plane plan exists", func() {
+				cpPlan, err := plan.OSControlPlane(config.ReleaseNamespacedName.Name, config.OS.Image, config.OS.Version, config.ReleaseVersion, false)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(fakeClient.Create(ctx, cpPlan)).To(Succeed())
+
+				_, err = reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(prePullPlans()).To(BeEmpty())
+			})
+		})
+
 		Context("when plan reconciliation fails", func() {
 			BeforeEach(func() {
 				node := testutil.NewTestNode("node1", true)

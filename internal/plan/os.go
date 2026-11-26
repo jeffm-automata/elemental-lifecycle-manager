@@ -36,6 +36,7 @@ import (
 const (
 	osControlPlaneBaseName = "elemental-os-control-plane"
 	osWorkerBaseName       = "elemental-os-worker"
+	osPrePullBaseName      = "elemental-os-prepull"
 	osUpgradeShell         = "/bin/sh"
 
 	// osJobDeadline is the time a single node is given for its OS upgrade job: the pull of the OS image,
@@ -46,6 +47,12 @@ const (
 	// osPrepareScript is the command of the prepare container of OS plans. The container has
 	// nothing to do, it only exists so that the OS image is pulled before the node is drained.
 	osPrepareScript = `echo "OS image is available on the node"`
+
+	// osPrePullConcurrency is the number of nodes that pull the OS image in advance at the same time.
+	// It bounds the load on the registry that serves the image.
+	osPrePullConcurrency = 5
+	// osPrePullJobDeadline is the time a single node is given to pull the OS image in advance.
+	osPrePullJobDeadline = 30 * time.Minute
 )
 
 //go:embed templates/os-upgrade.sh.tpl
@@ -53,7 +60,42 @@ var osUpgradeScriptTpl string
 
 // IsOS reports whether the given SUC Plan name is the name of an operating system upgrade plan.
 func IsOS(planName string) bool {
-	return strings.HasPrefix(planName, osControlPlaneBaseName+"-") || strings.HasPrefix(planName, osWorkerBaseName+"-")
+	return strings.HasPrefix(planName, osControlPlaneBaseName+"-") || strings.HasPrefix(planName, osWorkerBaseName+"-") ||
+		strings.HasPrefix(planName, osPrePullBaseName+"-")
+}
+
+// osPrePullName returns the full plan name for the given version.
+func osPrePullName(version string) string {
+	return fmt.Sprintf("%s-%s", osPrePullBaseName, lifecyclev1alpha1.SanitizeVersion(version))
+}
+
+// OSPrePull builds a SUC Plan that makes every node of the cluster pull the OS image, without upgrading anything.
+//
+// The upgrade plans pull the image in the prepare step of each node, when it is the turn of that node. As nodes
+// are upgraded one after the other, the pulls add up in the duration of the upgrade. This plan neither cordons nor
+// drains a node and runs on several nodes at once, so that the image is already present on a node when its turn comes.
+// It is an optimisation only: the upgrade plans do not wait for it and still pull the image themselves if needed.
+func OSPrePull(releaseName, osImage, osVersion, releaseVersion string) *upgradecattlev1.Plan {
+	p := basePlan(osPrePullName(osVersion), false, osPrePullJobDeadline)
+	// Without a drain the base plan cordons the node, which a node that only pulls an image must not be.
+	p.Spec.Cordon = false
+	p.Labels = map[string]string{
+		lifecyclev1alpha1.ReleaseNameLabel:    releaseName,
+		lifecyclev1alpha1.ReleaseVersionLabel: lifecyclev1alpha1.SanitizeVersion(releaseVersion),
+	}
+	p.Spec.Version = osVersion
+	p.Spec.Concurrency = osPrePullConcurrency
+	// SUC applies a plan without a node selector to no node at all. Every node has a hostname label.
+	p.Spec.NodeSelector = &metav1.LabelSelector{
+		MatchExpressions: []metav1.LabelSelectorRequirement{
+			{
+				Key:      hostnameLabel,
+				Operator: metav1.LabelSelectorOpExists,
+			},
+		},
+	}
+	p.Spec.Upgrade = osPrepareContainer(osImage)
+	return p
 }
 
 // osControlPlaneName returns the full plan name for the given version.

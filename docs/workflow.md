@@ -32,6 +32,8 @@ After each plan is deployed, SUC creates the corresponding upgrade workloads for
 
 Before a node is cordoned and drained, its workload pulls the operating system image of the desired release in a preparation step. The time it takes to download the image is therefore not part of the time during which the node is unavailable for its regular workloads.
 
+So that the nodes do not each wait for the image when their turn comes, LCM also creates a third `SUC Plan`, `elemental-os-prepull-<version>`, together with the first upgrade plan. It runs on up to five nodes at the same time, neither cordons nor drains a node and does nothing but pull the operating system image. The upgrade plans do not wait for it: a node that has not pulled the image when its turn comes pulls it in its own preparation step.
+
 Each workload has to finish within 45 minutes. This covers everything it does on its node: pulling the operating system image, the drain, which may take up to 15 minutes, the upgrade, the reboot and the confirmation that the node runs the new image.
 
 A workload does not upgrade a node that already runs the operating system image of the desired release. It determines this from the files that the [SUSE/elemental](https://github.com/SUSE/elemental/tree/main) tool stack keeps in `/etc/elemental` on the node:

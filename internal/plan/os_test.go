@@ -185,6 +185,54 @@ upgrader "$INCOMING" && chroot /host reboot
 		})
 	})
 
+	Describe("OSPrePull", Ordered, func() {
+		var plan *upgradecattlev1.Plan
+
+		BeforeEach(func() {
+			plan = OSPrePull(releaseName, osImage, osVersion, releaseVersion)
+		})
+
+		It("creates a plan with correct metadata", func() {
+			Expect(plan).ToNot(BeNil())
+			Expect(plan.TypeMeta.Kind).To(Equal("Plan"))
+			Expect(plan.TypeMeta.APIVersion).To(Equal("upgrade.cattle.io/v1"))
+			Expect(plan.ObjectMeta.Name).To(Equal("elemental-os-prepull-1-2-3"))
+			Expect(plan.ObjectMeta.Namespace).To(Equal(Namespace))
+			Expect(IsOS(plan.Name)).To(BeTrue())
+		})
+
+		It("sets release labels", func() {
+			Expect(plan.Labels).To(HaveKeyWithValue(lifecyclev1alpha1.ReleaseNameLabel, releaseName))
+			Expect(plan.Labels).To(HaveKeyWithValue(lifecyclev1alpha1.ReleaseVersionLabel, "0-6-0"))
+		})
+
+		It("neither cordons nor drains a node", func() {
+			Expect(plan.Spec.Cordon).To(BeFalse())
+			Expect(plan.Spec.Drain).To(BeNil())
+		})
+
+		It("selects every node and pulls on several nodes at the same time", func() {
+			Expect(plan.Spec.NodeSelector).ToNot(BeNil())
+			Expect(plan.Spec.NodeSelector.MatchExpressions).To(HaveLen(1))
+			Expect(plan.Spec.NodeSelector.MatchExpressions[0].Key).To(Equal("kubernetes.io/hostname"))
+			Expect(plan.Spec.NodeSelector.MatchExpressions[0].Operator).To(Equal(metav1.LabelSelectorOpExists))
+			Expect(plan.Spec.Concurrency).To(Equal(int64(5)))
+		})
+
+		It("only pulls the OS image", func() {
+			Expect(plan.Spec.Version).To(Equal(osVersion))
+			Expect(plan.Spec.Prepare).To(BeNil())
+			Expect(plan.Spec.Upgrade).ToNot(BeNil())
+			Expect(plan.Spec.Upgrade.Image).To(Equal(osImage))
+			Expect(plan.Spec.Upgrade.Command).To(Equal([]string{"/bin/sh", "-c"}))
+			Expect(plan.Spec.Upgrade.Args).To(Equal([]string{`echo "OS image is available on the node"`}))
+		})
+
+		It("gives a node time to pull the image", func() {
+			Expect(plan.Spec.JobActiveDeadlineSecs).To(Equal(ptr.To(int64((30 * time.Minute).Seconds()))))
+		})
+	})
+
 	Describe("OSWorker", Ordered, func() {
 		var plan *upgradecattlev1.Plan
 

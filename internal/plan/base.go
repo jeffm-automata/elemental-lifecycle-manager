@@ -34,6 +34,9 @@ const (
 	// ControlPlaneLabel is an identifier of control plane nodes.
 	ControlPlaneLabel = "node-role.kubernetes.io/control-plane"
 
+	// hostnameLabel is a label that every node of a cluster has.
+	hostnameLabel = "kubernetes.io/hostname"
+
 	// drainTimeout is the time a node is given to evict its workloads.
 	drainTimeout = 15 * time.Minute
 )

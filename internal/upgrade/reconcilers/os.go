@@ -144,7 +144,13 @@ func (r *OSReconciler) ensurePrePull(ctx context.Context, config *upgrade.Config
 		return fmt.Errorf("retrieving plan %q: %w", cpPlan.Name, err)
 	}
 
-	prePull := plan.OSPrePull(releaseName, osConfig.Image, osConfig.Version, config.ReleaseVersion)
+	// The Kubernetes upgrade follows the OS upgrade: its image can be pulled in the same pass.
+	kubernetesImage := ""
+	if config.Kubernetes != nil && config.Kubernetes.Version != "" {
+		kubernetesImage = plan.KubernetesUpgradeImage(config.Kubernetes.Version)
+	}
+
+	prePull := plan.OSPrePull(releaseName, osConfig.Image, osConfig.Version, config.ReleaseVersion, kubernetesImage)
 	if err := r.Create(ctx, prePull); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("creating plan %q: %w", prePull.Name, err)
 	}

@@ -39,6 +39,12 @@ const (
 	kubernetesJobDeadline = drainTimeout + 15*time.Minute
 )
 
+// KubernetesUpgradeImage returns the image, with its tag, that the upgrade container of the Kubernetes plans runs for the
+// given Kubernetes version. SUC derives the tag from the plan version in the same way: a '+' is not valid in a tag.
+func KubernetesUpgradeImage(k8sVersion string) string {
+	return fmt.Sprintf("%s:%s", rke2UpgradeImage, strings.ReplaceAll(k8sVersion, "+", "-"))
+}
+
 // IsKubernetes reports whether the given SUC Plan name is the name of a Kubernetes upgrade plan.
 func IsKubernetes(planName string) bool {
 	return strings.HasPrefix(planName, kubernetesControlPlaneBaseName+"-") || strings.HasPrefix(planName, kubernetesWorkerBaseName+"-")

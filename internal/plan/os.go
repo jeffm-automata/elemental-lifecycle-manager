@@ -48,6 +48,10 @@ const (
 	// nothing to do, it only exists so that the OS image is pulled before the node is drained.
 	osPrepareScript = `echo "OS image is available on the node"`
 
+	// kubernetesPrePullScript is the command of the container that only exists so that the image of the
+	// Kubernetes upgrade is pulled in advance.
+	kubernetesPrePullScript = `echo "Kubernetes upgrade image is available on the node"`
+
 	// osPrePullConcurrency is the number of nodes that pull the OS image in advance at the same time.
 	// It bounds the load on the registry that serves the image.
 	osPrePullConcurrency = 5
@@ -75,7 +79,10 @@ func osPrePullName(version string) string {
 // are upgraded one after the other, the pulls add up in the duration of the upgrade. This plan neither cordons nor
 // drains a node and runs on several nodes at once, so that the image is already present on a node when its turn comes.
 // It is an optimisation only: the upgrade plans do not wait for it and still pull the image themselves if needed.
-func OSPrePull(releaseName, osImage, osVersion, releaseVersion string) *upgradecattlev1.Plan {
+//
+// A non-empty kubernetesImage is pulled as well: it is the image of the Kubernetes upgrade that follows the OS upgrade,
+// which a node otherwise pulls after it has been cordoned and drained.
+func OSPrePull(releaseName, osImage, osVersion, releaseVersion, kubernetesImage string) *upgradecattlev1.Plan {
 	p := basePlan(osPrePullName(osVersion), false, osPrePullJobDeadline)
 	// Without a drain the base plan cordons the node, which a node that only pulls an image must not be.
 	p.Spec.Cordon = false
@@ -93,6 +100,13 @@ func OSPrePull(releaseName, osImage, osVersion, releaseVersion string) *upgradec
 				Operator: metav1.LabelSelectorOpExists,
 			},
 		},
+	}
+	if kubernetesImage != "" {
+		p.Spec.Prepare = &upgradecattlev1.ContainerSpec{
+			Image:   kubernetesImage,
+			Command: []string{osUpgradeShell, "-c"},
+			Args:    []string{kubernetesPrePullScript},
+		}
 	}
 	p.Spec.Upgrade = osPrepareContainer(osImage)
 	return p

@@ -189,7 +189,7 @@ upgrader "$INCOMING" && chroot /host reboot
 		var plan *upgradecattlev1.Plan
 
 		BeforeEach(func() {
-			plan = OSPrePull(releaseName, osImage, osVersion, releaseVersion)
+			plan = OSPrePull(releaseName, osImage, osVersion, releaseVersion, "")
 		})
 
 		It("creates a plan with correct metadata", func() {
@@ -226,6 +226,17 @@ upgrader "$INCOMING" && chroot /host reboot
 			Expect(plan.Spec.Upgrade.Image).To(Equal(osImage))
 			Expect(plan.Spec.Upgrade.Command).To(Equal([]string{"/bin/sh", "-c"}))
 			Expect(plan.Spec.Upgrade.Args).To(Equal([]string{`echo "OS image is available on the node"`}))
+		})
+
+		It("pulls the image of the Kubernetes upgrade as well when it is given", func() {
+			Expect(KubernetesUpgradeImage("v1.37.2+rke2r1")).To(Equal("rancher/rke2-upgrade:v1.37.2-rke2r1"))
+			plan = OSPrePull(releaseName, osImage, osVersion, releaseVersion, KubernetesUpgradeImage("v1.37.2+rke2r1"))
+			Expect(plan.Spec.Prepare).ToNot(BeNil())
+			Expect(plan.Spec.Prepare.Image).To(Equal("rancher/rke2-upgrade:v1.37.2-rke2r1"))
+			Expect(plan.Spec.Prepare.Command).To(Equal([]string{"/bin/sh", "-c"}))
+			Expect(plan.Spec.Upgrade.Image).To(Equal(osImage))
+			Expect(plan.Spec.Cordon).To(BeFalse())
+			Expect(plan.Spec.Drain).To(BeNil())
 		})
 
 		It("gives a node time to pull the image", func() {

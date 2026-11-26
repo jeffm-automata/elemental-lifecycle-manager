@@ -49,6 +49,10 @@ type Config struct {
 	// UpgradeStrategy specifies how the nodes reach the target operating system and Kubernetes versions.
 	// An empty value is the same as lifecyclev1alpha1.UpgradeStrategyInPlace.
 	UpgradeStrategy lifecyclev1alpha1.UpgradeStrategy
+	// OnePass asks for the operating system and Kubernetes of a node to be upgraded in the same visit:
+	// the node is cordoned, drained and rebooted once for both. It only applies to in place upgrades.
+	// Without it the operating system of all nodes is upgraded first and Kubernetes in a second round.
+	OnePass bool
 	// OS contains all upgrade configurations related to the target operating system.
 	OS *OSConfig
 	// Kubernetes contains all upgrade configurations related to the target Kubernetes distribution.

@@ -89,6 +89,11 @@ webhook:
 # Disabled by default to reduce exposure to HTTP/2-related vulnerabilities.
 enableHTTP2: false
 
+# Upgrades the operating system and Kubernetes of a node in one pass: every node is cordoned, drained and
+# rebooted once, and starts the new Kubernetes version on the new operating system. When disabled, the
+# operating system of all nodes is upgraded first and Kubernetes in a second round over all nodes.
+onePassUpgrade: false
+
 extraArgs: []
 extraEnv: []
 extraVolumes: []

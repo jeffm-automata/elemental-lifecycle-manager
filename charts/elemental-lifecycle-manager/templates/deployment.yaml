@@ -64,6 +64,10 @@ spec:
             - name: ENABLE_WEBHOOKS
               value: "false"
             {{- end }}
+            {{- if .Values.onePassUpgrade }}
+            - name: ELEMENTAL_UPGRADE_ONE_PASS
+              value: "true"
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

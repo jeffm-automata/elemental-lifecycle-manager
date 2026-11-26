@@ -21,6 +21,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"strconv"
 	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -201,6 +202,15 @@ func main() {
 	}
 
 	sucPlanReconciler := reconcilers.NewSUCPlanReconciler(k8sClient)
+
+	// One pass per node is opt-in: without the variable nothing changes.
+	onePassUpgrade, _ := strconv.ParseBool(os.Getenv("ELEMENTAL_UPGRADE_ONE_PASS"))
+	if onePassUpgrade {
+		setupLog.Info("In place upgrades bring a node to the operating system and Kubernetes version of a release in one pass")
+	}
+
+	osReconciler := reconcilers.NewOSReconciler(k8sClient, sucPlanReconciler)
+	osReconciler.PackagedComponents = packagedComponentsHandler
 	if err := (&controller.ReleaseReconciler{
 		Client:             mgr.GetClient(),
 		Scheme:             mgr.GetScheme(),
@@ -209,9 +219,10 @@ func main() {
 		ChartVersion:       os.Getenv("LCM_CHART_VERSION"),
 		HelmClient:         helmClient,
 		Recorder:           mgr.GetEventRecorder("elemental-lifecycle-manager"),
+		OnePassUpgrade:     onePassUpgrade,
 		Pipeline: upgrade.NewPipeline(
 			reconcilers.NewPriorityHelmReconciler(k8sClient, helmClient),
-			reconcilers.NewOSReconciler(k8sClient, sucPlanReconciler),
+			osReconciler,
 			reconcilers.NewKubernetesReconciler(
 				k8sClient,
 				sucPlanReconciler,

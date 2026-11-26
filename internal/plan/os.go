@@ -30,6 +30,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/name"
 	upgradecattlev1 "github.com/rancher/system-upgrade-controller/pkg/apis/upgrade.cattle.io/v1"
 	lifecyclev1alpha1 "github.com/suse/elemental-lifecycle-manager/api/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -61,6 +62,12 @@ const (
 
 //go:embed templates/os-upgrade.sh.tpl
 var osUpgradeScriptTpl string
+
+//go:embed templates/kubernetes-stage.sh.tpl
+var kubernetesStageScriptTpl string
+
+// OnePassAnnotation is set on the OS plans that also bring a node to the Kubernetes version it names.
+const OnePassAnnotation = "lifecycle.suse.com/one-pass-kubernetes"
 
 // IsOS reports whether the given SUC Plan name is the name of an operating system upgrade plan.
 func IsOS(planName string) bool {
@@ -185,6 +192,94 @@ func OSWorker(releaseName, osImage, osVersion, releaseVersion string, drain bool
 	return p, nil
 }
 
+// OSControlPlaneOnePass builds a SUC Plan that upgrades the OS of the control plane nodes and, in the same job,
+// brings them to the given Kubernetes version: a node is cordoned, drained and rebooted once for both.
+//
+// The plan differs from the one that OSControlPlane builds in two places. Its prepare step runs from the image of the
+// Kubernetes upgrade and puts the new Kubernetes binary next to the running one, before the node is cordoned. Its
+// upgrade step moves that binary into place after the OS upgrade has succeeded and right before the reboot, so that
+// the node starts the new Kubernetes version on the new operating system.
+func OSControlPlaneOnePass(releaseName, osImage, osVersion, releaseVersion, k8sVersion string, drain bool) (*upgradecattlev1.Plan, error) {
+	p, err := OSControlPlane(releaseName, osImage, osVersion, releaseVersion, drain)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := stageKubernetes(p, osImage, k8sVersion, false); err != nil {
+		return nil, err
+	}
+
+	return p, nil
+}
+
+// OSWorkerOnePass is the same as OSControlPlaneOnePass for worker nodes. A worker node only takes the new Kubernetes
+// version if all control plane nodes report it, so this plan must be created after the control plane nodes are done.
+func OSWorkerOnePass(releaseName, osImage, osVersion, releaseVersion, k8sVersion string, drain bool, concurrency int64) (*upgradecattlev1.Plan, error) {
+	p, err := OSWorker(releaseName, osImage, osVersion, releaseVersion, drain, concurrency)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := stageKubernetes(p, osImage, k8sVersion, true); err != nil {
+		return nil, err
+	}
+
+	return p, nil
+}
+
+// stageKubernetes turns an OS plan into one that upgrades the OS and Kubernetes of a node in one pass.
+func stageKubernetes(p *upgradecattlev1.Plan, osImage, k8sVersion string, worker bool) error {
+	stage, err := parseKubernetesStageScript(osImage, k8sVersion, worker)
+	if err != nil {
+		return fmt.Errorf("parsing Kubernetes stage script: %w", err)
+	}
+
+	upgradeScript, err := parseUpgradeScriptFor(osImage, true)
+	if err != nil {
+		return fmt.Errorf("parsing OS upgrade script: %w", err)
+	}
+
+	if p.Annotations == nil {
+		p.Annotations = map[string]string{}
+	}
+	p.Annotations[OnePassAnnotation] = k8sVersion
+
+	// The step writes next to the Kubernetes binary of the node, which SUC only lets the upgrade step do by default.
+	p.Spec.Prepare = &upgradecattlev1.ContainerSpec{
+		Image:           KubernetesUpgradeImage(k8sVersion),
+		Command:         []string{osUpgradeShell, "-c"},
+		Args:            []string{stage},
+		SecurityContext: &corev1.SecurityContext{Privileged: new(true)},
+	}
+	p.Spec.Upgrade.Args = []string{upgradeScript}
+
+	return nil
+}
+
+func parseKubernetesStageScript(osImage, k8sVersion string, worker bool) (string, error) {
+	tmpl, err := template.New("kubernetes-stage").Parse(kubernetesStageScriptTpl)
+	if err != nil {
+		return "", fmt.Errorf("allocating template for Kubernetes stage script: %w", err)
+	}
+
+	data := struct {
+		KubernetesVersion string
+		OSImage           string
+		Worker            bool
+	}{
+		KubernetesVersion: k8sVersion,
+		OSImage:           osImage,
+		Worker:            worker,
+	}
+
+	var out bytes.Buffer
+	if err := tmpl.Execute(&out, data); err != nil {
+		return "", fmt.Errorf("applying template for Kubernetes stage script: %w", err)
+	}
+
+	return out.String(), nil
+}
+
 // osPrepareContainer returns the prepare step of an OS plan.
 //
 // SUC runs the prepare container of a Plan before it cordons and drains the node, while the image
@@ -200,6 +295,12 @@ func osPrepareContainer(osImage string) *upgradecattlev1.ContainerSpec {
 }
 
 func parseUpgradeScript(osImage string) (string, error) {
+	return parseUpgradeScriptFor(osImage, false)
+}
+
+// parseUpgradeScriptFor returns the script of the upgrade step of an OS plan. With onePass the script also
+// installs the Kubernetes binary that the prepare step of the plan has staged, before it reboots the node.
+func parseUpgradeScriptFor(osImage string, onePass bool) (string, error) {
 	ref, err := name.NewTag(osImage, name.WeakValidation)
 	if err != nil {
 		return "", fmt.Errorf("parsing OS image %q: %w", osImage, err)
@@ -220,11 +321,13 @@ func parseUpgradeScript(osImage string) (string, error) {
 
 	data := struct {
 		FetchRemote    bool
+		OnePass        bool
 		OSImage        string
 		OSImageRepo    string
 		OSImageVersion string
 	}{
 		FetchRemote: fetchRemote(),
+		OnePass:     onePass,
 		// The release marker of a freshly installed system names the OS image exactly
 		// as the release manifest does, so the reference is passed on unmodified.
 		OSImage:        osImage,

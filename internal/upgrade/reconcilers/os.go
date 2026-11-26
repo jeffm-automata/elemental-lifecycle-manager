@@ -37,6 +37,11 @@ import (
 type OSReconciler struct {
 	client.Client
 	sucReconciler PlanReconciler
+
+	// PackagedComponents takes the snapshot of the packaged components of the Kubernetes distribution that
+	// the Kubernetes phase compares against. It is only used when nodes are upgraded in one pass, because the
+	// Kubernetes version then changes during this phase. Optional.
+	PackagedComponents KubernetesPackagedComponentsHandler
 }
 
 func NewOSReconciler(c client.Client, sucReconciler PlanReconciler) *OSReconciler {
@@ -77,14 +82,24 @@ func (r *OSReconciler) Reconcile(ctx context.Context, config *upgrade.Config) (*
 	}
 
 	// prepare an ordered list of SUC Plans for the different node types of the cluster.
-	plans, nodes, err := r.preparePlans(ctx, config)
+	plans, nodes, onePass, err := r.preparePlans(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("preparing OS upgrade plans: %w", err)
 	}
 
+	if onePass && r.PackagedComponents != nil {
+		// The nodes start the target Kubernetes version during this phase. The Kubernetes phase waits for the
+		// packaged components to follow and needs their state from before the first node is upgraded for that.
+		// An existing snapshot of this release is returned as it is.
+		if _, err := r.PackagedComponents.GenerateSnapshot(ctx, config); err != nil {
+			return nil, fmt.Errorf("generating Kubernetes packaged components snapshot: %w", err)
+		}
+	}
+
 	// The operating system of a worker node does not depend on that of the control plane nodes, so the
 	// worker plan does not have to wait for the control plane plan when the control plane stays available.
-	concurrent := hasHighlyAvailableControlPlane(nodes)
+	// A worker node that also gets a new Kubernetes version in its pass must wait for all control plane nodes.
+	concurrent := hasHighlyAvailableControlPlane(nodes) && !onePass
 
 	// reconcile each plan in the prepared list.
 	var pending *upgrade.PhaseStatus
@@ -193,23 +208,40 @@ func combinePlanStatus(combined, status *upgrade.PhaseStatus) *upgrade.PhaseStat
 // preparePlans determines which types of SUC Plans does the cluster need and returns a list of ordered SUC plans ready for reconciliation,
 // together with the nodes of the cluster. Control plane plans are always ordered before worker plans. With a single control plane node all
 // control-plane nodes are upgraded before any worker upgrade operation starts, otherwise both node types are upgraded at the same time.
-func (r *OSReconciler) preparePlans(ctx context.Context, config *upgrade.Config) ([]*upgradecattlev1.Plan, []corev1.Node, error) {
+//
+// With the one pass option, and as long as a node does not run the Kubernetes version of the release, the plans also bring
+// the nodes to that version and the returned flag is set: the worker plan then has to wait for the control plane plan.
+func (r *OSReconciler) preparePlans(ctx context.Context, config *upgrade.Config) ([]*upgradecattlev1.Plan, []corev1.Node, bool, error) {
 	osConfig := config.OS
-	cpPlan, err := plan.OSControlPlane(config.ReleaseNamespacedName.Name, osConfig.Image, osConfig.Version, config.ReleaseVersion, osConfig.DrainOpts.ControlPlane)
+
+	allNodes := &corev1.NodeList{}
+	if err := r.List(ctx, allNodes); err != nil {
+		return nil, nil, false, fmt.Errorf("listing cluster nodes: %w", err)
+	}
+
+	releaseName := config.ReleaseNamespacedName.Name
+	onePass := onePassRequired(config, allNodes.Items)
+
+	var cpPlan, wkPlan *upgradecattlev1.Plan
+	var err error
+	if onePass {
+		cpPlan, err = plan.OSControlPlaneOnePass(releaseName, osConfig.Image, osConfig.Version, config.ReleaseVersion, config.Kubernetes.Version, osConfig.DrainOpts.ControlPlane)
+	} else {
+		cpPlan, err = plan.OSControlPlane(releaseName, osConfig.Image, osConfig.Version, config.ReleaseVersion, osConfig.DrainOpts.ControlPlane)
+	}
 	if err != nil {
-		return nil, nil, fmt.Errorf("generating OS control-plane plan: %w", err)
+		return nil, nil, false, fmt.Errorf("generating OS control-plane plan: %w", err)
 	}
 
 	planList := []*upgradecattlev1.Plan{cpPlan}
 
-	allNodes := &corev1.NodeList{}
-	if err := r.List(ctx, allNodes); err != nil {
-		return nil, nil, fmt.Errorf("listing cluster nodes: %w", err)
+	if onePass {
+		wkPlan, err = plan.OSWorkerOnePass(releaseName, osConfig.Image, osConfig.Version, config.ReleaseVersion, config.Kubernetes.Version, osConfig.DrainOpts.Worker, osConfig.WorkerConcurrency)
+	} else {
+		wkPlan, err = plan.OSWorker(releaseName, osConfig.Image, osConfig.Version, config.ReleaseVersion, osConfig.DrainOpts.Worker, osConfig.WorkerConcurrency)
 	}
-
-	wkPlan, err := plan.OSWorker(config.ReleaseNamespacedName.Name, osConfig.Image, osConfig.Version, config.ReleaseVersion, osConfig.DrainOpts.Worker, osConfig.WorkerConcurrency)
 	if err != nil {
-		return nil, nil, fmt.Errorf("generating OS worker plan: %w", err)
+		return nil, nil, false, fmt.Errorf("generating OS worker plan: %w", err)
 	}
 
 	// A worker plan that has been created stays part of the phase when the cluster has no worker nodes
@@ -217,14 +249,33 @@ func (r *OSReconciler) preparePlans(ctx context.Context, config *upgrade.Config)
 	// must not report success while that plan has not completed.
 	include, err := workerPlanRequired(ctx, r.Client, wkPlan, allNodes.Items)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 
 	if include {
 		planList = append(planList, wkPlan)
 	}
 
-	return planList, allNodes.Items, nil
+	return planList, allNodes.Items, onePass, nil
+}
+
+// onePassRequired reports whether the OS plans also have to bring the nodes to the Kubernetes version of the release.
+//
+// That is the case when the option is set and at least one node does not report that version. When all nodes report it,
+// the release does not change the Kubernetes version, or the nodes have been upgraded already: the OS plans are then the
+// same as without the option. A SUC Plan is not changed once it exists, so the decision only matters when a plan is created.
+func onePassRequired(config *upgrade.Config, nodes []corev1.Node) bool {
+	if !config.OnePass || config.ReplaceNodes() || config.Kubernetes == nil || config.Kubernetes.Version == "" {
+		return false
+	}
+
+	for _, node := range nodes {
+		if !kubeletVersionMatches(node.Status.NodeInfo.KubeletVersion, config.Kubernetes.Version) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // deleteReleasePlans deletes the SUC Plans of the given Release, of any version, whose name is matched.

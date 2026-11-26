@@ -84,6 +84,10 @@ type ReleaseReconciler struct {
 
 	// Recorder emits events about the Release resource. Optional.
 	Recorder events.EventRecorder
+
+	// OnePassUpgrade makes in place upgrades bring a node to the operating system and the Kubernetes version
+	// of a release in one visit instead of two. Off by default.
+	OnePassUpgrade bool
 }
 
 // +kubebuilder:rbac:groups=lifecycle.suse.com,resources=releases,verbs=get;list;watch;create;update;patch;delete
@@ -471,7 +475,7 @@ func (r *ReleaseReconciler) parseUpgradeConfig(ctx context.Context, manifest *re
 		return nil, fmt.Errorf("checking whether Rancher manages SUC: %w", err)
 	}
 
-	return upgrade.NewConfig(manifest,
+	config, err = upgrade.NewConfig(manifest,
 		release.Spec.Version,
 		types.NamespacedName{Name: release.Name, Namespace: release.Namespace},
 		&upgrade.RuntimeConfig{
@@ -480,6 +484,12 @@ func (r *ReleaseReconciler) parseUpgradeConfig(ctx context.Context, manifest *re
 			WorkerConcurrency: int64(ptr.Deref(release.Spec.WorkerConcurrency, 0)),
 			UpgradeStrategy:   release.Spec.UpgradeStrategy,
 		})
+	if err != nil {
+		return nil, err
+	}
+	config.OnePass = r.OnePassUpgrade
+
+	return config, nil
 }
 
 const (

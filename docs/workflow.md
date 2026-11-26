@@ -45,6 +45,19 @@ In any other case, including a missing or unreadable release marker, the node is
 
 A successful node operating system upgrade is indicated by the node rebooting and becoming available again. Once this happens, SUC creates the workload for the next node. The operating system upgrade phase is marked as `Completed` only after all `control-plane` and `worker` workloads complete successfully.
 
+### One pass per node (optional)
+
+By default every node is visited twice: once in this phase and once in the Kubernetes upgrade phase, and it is cordoned and drained both times. With the chart value `onePassUpgrade: true` (environment variable `ELEMENTAL_UPGRADE_ONE_PASS=true` of the LCM deployment) a node is brought to the operating system **and** the Kubernetes version of the release in one visit, as long as at least one node does not run that Kubernetes version yet:
+
+* The preparation step of each workload runs from the [rancher/rke2-upgrade](https://github.com/rancher/rke2-upgrade/tree/master) image of the desired Kubernetes version. Before the node is cordoned, it copies the new `rke2` binary next to the one in use (`<path>.elemental-staged`), records that in `/run/elemental-onepass` and asks the node to pull the operating system image. A `worker` node only stages the binary if all `control-plane` nodes report the desired Kubernetes version. Nothing that is in use is changed in this step.
+* After the operating system upgrade has succeeded, and right before the reboot, the workload moves the staged binary into place. The binary that was in use is kept as `<path>.elemental-previous`. The node then reboots once and starts the desired Kubernetes version on the new operating system.
+* The `worker` plan is **only** deployed after the `control-plane` plan has completed, whatever the number of `control-plane` nodes: a `worker` node must not run a newer Kubernetes version than the control plane.
+* The Kubernetes upgrade phase that follows is unchanged. It finds all nodes at the desired Kubernetes version, creates no `SUC Plans` and proceeds with the packaged components validation. The state of the packaged components that it compares against is recorded before the first node is upgraded.
+
+A node that is not rebooted in this phase, because it already runs the operating system image of the release, keeps its Kubernetes version. The Kubernetes upgrade phase then creates its `SUC Plans` as described below, for all nodes. The same happens when the option is disabled.
+
+The operating system snapshots of a node do not contain the `rke2` binary. A node that falls back to its previous snapshot after the reboot therefore runs the previous operating system with the new Kubernetes version.
+
 ## Kubernetes Upgrade Phase
 
 ![Kubernetes upgrade phase](images/lcm-k8s-upgrade-process.png)

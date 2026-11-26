@@ -309,6 +309,117 @@ var _ = Describe("OSReconciler", func() {
 			})
 		})
 
+		Context("with several control-plane nodes and worker nodes", func() {
+			BeforeEach(func() {
+				for _, name := range []string{"cp1", "cp2", "cp3"} {
+					Expect(fakeClient.Create(ctx, testutil.NewTestNode(name, true))).To(Succeed())
+				}
+				for _, name := range []string{"worker1", "worker2"} {
+					Expect(fakeClient.Create(ctx, testutil.NewTestNode(name, false))).To(Succeed())
+				}
+			})
+
+			planStatus := func(state, message string) *reconcilers.PlanResult {
+				return &reconcilers.PlanResult{
+					Status: &upgrade.PhaseStatus{State: state, Message: message},
+					Nodes:  []corev1.Node{},
+				}
+			}
+
+			It("should start the worker plan while the control-plane plan is in progress", func() {
+				var planNames []string
+				mockPlanRec.ReconcileFn = func(ctx context.Context, desired *upgradecattlev1.Plan) (*reconcilers.PlanResult, error) {
+					planNames = append(planNames, desired.Name)
+					if strings.Contains(desired.Name, "control-plane") {
+						return planStatus(lifecyclev1alpha1.UpgradeInProgress, "Control-plane upgrade in progress"), nil
+					}
+					return planStatus(lifecyclev1alpha1.UpgradeInProgress, "Worker upgrade in progress"), nil
+				}
+
+				status, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(planNames).To(HaveLen(2))
+				Expect(planNames[0]).To(ContainSubstring("control-plane"))
+				Expect(planNames[1]).To(ContainSubstring("worker"))
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+				Expect(status.Message).To(Equal("Control-plane upgrade in progress; Worker upgrade in progress"))
+			})
+
+			It("should keep upgrading one control-plane node and one worker node at a time", func() {
+				concurrency := map[string]int64{}
+				mockPlanRec.ReconcileFn = func(ctx context.Context, desired *upgradecattlev1.Plan) (*reconcilers.PlanResult, error) {
+					concurrency[desired.Name] = desired.Spec.Concurrency
+					return planStatus(lifecyclev1alpha1.UpgradeInProgress, "in progress"), nil
+				}
+
+				_, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(concurrency).To(HaveLen(2))
+				for name, value := range concurrency {
+					Expect(value).To(Equal(int64(1)), name)
+				}
+			})
+
+			It("should not report success while only the worker plan has completed", func() {
+				mockPlanRec.ReconcileFn = func(ctx context.Context, desired *upgradecattlev1.Plan) (*reconcilers.PlanResult, error) {
+					if strings.Contains(desired.Name, "control-plane") {
+						return planStatus(lifecyclev1alpha1.UpgradeInProgress, "Control-plane upgrade in progress"), nil
+					}
+					return planStatus(lifecyclev1alpha1.PlanComplete, testPlanCompleted), nil
+				}
+
+				status, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+				Expect(status.Message).To(Equal("Control-plane upgrade in progress"))
+			})
+
+			It("should not report success while only the control-plane plan has completed", func() {
+				mockPlanRec.ReconcileFn = func(ctx context.Context, desired *upgradecattlev1.Plan) (*reconcilers.PlanResult, error) {
+					if strings.Contains(desired.Name, "control-plane") {
+						return planStatus(lifecyclev1alpha1.PlanComplete, testPlanCompleted), nil
+					}
+					return planStatus(lifecyclev1alpha1.UpgradeInProgress, "Worker upgrade in progress"), nil
+				}
+
+				status, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeInProgress))
+				Expect(status.Message).To(Equal("Worker upgrade in progress"))
+			})
+
+			It("should report a failed plan while the other plan is in progress", func() {
+				mockPlanRec.ReconcileFn = func(ctx context.Context, desired *upgradecattlev1.Plan) (*reconcilers.PlanResult, error) {
+					if strings.Contains(desired.Name, "control-plane") {
+						return planStatus(lifecyclev1alpha1.UpgradeInProgress, "Control-plane upgrade in progress"), nil
+					}
+					return planStatus(lifecyclev1alpha1.UpgradeFailed, "Worker upgrade failed"), nil
+				}
+
+				status, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeFailed))
+				Expect(status.Message).To(ContainSubstring("Control-plane upgrade in progress"))
+				Expect(status.Message).To(ContainSubstring("Worker upgrade failed"))
+			})
+
+			It("should return succeeded when all plans complete", func() {
+				mockPlanRec.ReconcileFn = func(ctx context.Context, desired *upgradecattlev1.Plan) (*reconcilers.PlanResult, error) {
+					return planStatus(lifecyclev1alpha1.PlanComplete, testPlanCompleted), nil
+				}
+
+				status, err := reconciler.Reconcile(ctx, config)
+
+				Expect(err).NotTo(HaveOccurred())
+				Expect(status.State).To(Equal(lifecyclev1alpha1.UpgradeSucceeded))
+			})
+		})
+
 		Context("when plan reconciliation fails", func() {
 			BeforeEach(func() {
 				node := testutil.NewTestNode("node1", true)

@@ -72,23 +72,32 @@ func (r *OSReconciler) Reconcile(ctx context.Context, config *upgrade.Config) (*
 		"release", config.ReleaseNamespacedName.Name)
 
 	// prepare an ordered list of SUC Plans for the different node types of the cluster.
-	plans, err := r.preparePlans(ctx, config)
+	plans, nodes, err := r.preparePlans(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("preparing OS upgrade plans: %w", err)
 	}
 
+	// The operating system of a worker node does not depend on that of the control plane nodes, so the
+	// worker plan does not have to wait for the control plane plan when the control plane stays available.
+	concurrent := hasHighlyAvailableControlPlane(nodes)
+
 	// reconcile each plan in the prepared list.
+	var pending *upgrade.PhaseStatus
 	for _, p := range plans {
 		result, err := r.sucReconciler.Reconcile(ctx, p)
 		if err != nil {
 			return nil, fmt.Errorf("reconciling OS upgrade plan %q: %w", p.Name, err)
 		}
 
-		// If the plan is not in a 'Complete' status, return its current status.
-		// This ensures that we do not start any reconciliation of another plan before the
-		// first plan in the list has completed.
 		if result.Status.State != lifecyclev1alpha1.PlanComplete {
-			return result.Status, nil
+			// With a single control plane node the plans are reconciled in sequence: return the current status
+			// of the first plan that is not in a 'Complete' status, so that no other plan is started before it.
+			if !concurrent {
+				return result.Status, nil
+			}
+
+			pending = combinePlanStatus(pending, result.Status)
+			continue
 		}
 
 		logger.Info("OS upgrade plan completed",
@@ -98,32 +107,66 @@ func (r *OSReconciler) Reconcile(ctx context.Context, config *upgrade.Config) (*
 		)
 	}
 
+	if pending != nil {
+		return pending, nil
+	}
+
 	return &upgrade.PhaseStatus{
 		State:   lifecyclev1alpha1.UpgradeSucceeded,
 		Message: "All nodes upgraded successfully",
 	}, nil
 }
 
-// preparePlans determines which types of SUC Plans does the cluster need and returns a list of ordered SUC plans ready for reconciliation.
-// Control plane plans are always ordered before worker plans, ensuring that all control-plane nodes are upgraded before any worker upgrade
-// operation starts.
-func (r *OSReconciler) preparePlans(ctx context.Context, config *upgrade.Config) ([]*upgradecattlev1.Plan, error) {
+// hasHighlyAvailableControlPlane reports whether the cluster has more than one control plane node.
+//
+// The control plane plan upgrades one node at a time, so the Kubernetes API of such a cluster stays
+// available while a control plane node reboots. With a single control plane node the API is gone for the
+// time of its reboot, and the drain of a worker node that needs the API at that moment would fail.
+func hasHighlyAvailableControlPlane(nodes []corev1.Node) bool {
+	var controlPlanes int
+	for _, node := range nodes {
+		if _, isControlPlane := node.Labels[plan.ControlPlaneLabel]; isControlPlane {
+			controlPlanes++
+		}
+	}
+	return controlPlanes > 1
+}
+
+// combinePlanStatus merges the status of a plan that has not completed into the status
+// of the plans that have been looked at before it. A failed plan makes the combined status failed.
+func combinePlanStatus(combined, status *upgrade.PhaseStatus) *upgrade.PhaseStatus {
+	if combined == nil {
+		return &upgrade.PhaseStatus{State: status.State, Message: status.Message}
+	}
+
+	if status.State == lifecyclev1alpha1.UpgradeFailed {
+		combined.State = lifecyclev1alpha1.UpgradeFailed
+	}
+	combined.Message = fmt.Sprintf("%s; %s", combined.Message, status.Message)
+
+	return combined
+}
+
+// preparePlans determines which types of SUC Plans does the cluster need and returns a list of ordered SUC plans ready for reconciliation,
+// together with the nodes of the cluster. Control plane plans are always ordered before worker plans. With a single control plane node all
+// control-plane nodes are upgraded before any worker upgrade operation starts, otherwise both node types are upgraded at the same time.
+func (r *OSReconciler) preparePlans(ctx context.Context, config *upgrade.Config) ([]*upgradecattlev1.Plan, []corev1.Node, error) {
 	osConfig := config.OS
 	cpPlan, err := plan.OSControlPlane(config.ReleaseNamespacedName.Name, osConfig.Image, osConfig.Version, config.ReleaseVersion, osConfig.DrainOpts.ControlPlane)
 	if err != nil {
-		return nil, fmt.Errorf("generating OS control-plane plan: %w", err)
+		return nil, nil, fmt.Errorf("generating OS control-plane plan: %w", err)
 	}
 
 	planList := []*upgradecattlev1.Plan{cpPlan}
 
 	allNodes := &corev1.NodeList{}
 	if err := r.List(ctx, allNodes); err != nil {
-		return nil, fmt.Errorf("listing cluster nodes: %w", err)
+		return nil, nil, fmt.Errorf("listing cluster nodes: %w", err)
 	}
 
 	wkPlan, err := plan.OSWorker(config.ReleaseNamespacedName.Name, osConfig.Image, osConfig.Version, config.ReleaseVersion, osConfig.DrainOpts.Worker, osConfig.WorkerConcurrency)
 	if err != nil {
-		return nil, fmt.Errorf("generating OS worker plan: %w", err)
+		return nil, nil, fmt.Errorf("generating OS worker plan: %w", err)
 	}
 
 	// A worker plan that has been created stays part of the phase when the cluster has no worker nodes
@@ -131,14 +174,14 @@ func (r *OSReconciler) preparePlans(ctx context.Context, config *upgrade.Config)
 	// must not report success while that plan has not completed.
 	include, err := workerPlanRequired(ctx, r.Client, wkPlan, allNodes.Items)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if include {
 		planList = append(planList, wkPlan)
 	}
 
-	return planList, nil
+	return planList, allNodes.Items, nil
 }
 
 // deleteReleasePlans deletes the SUC Plans of the given Release, of any version, whose name is matched.
